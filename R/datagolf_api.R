@@ -7,6 +7,14 @@
 #   source("R/datagolf_api.R")
 #   df <- dg_historical_raw(tour = "pga", year = 2023)
 
+# Validate API key on source — only scripts that source datagolf_api.R need it
+if (nchar(DG_API_KEY) == 0) {
+  cli_abort(c(
+    "GOLF_API_KEY is not set.",
+    "i" = "Run via: op run --env-file=.env.template -- Rscript R/<script>.R"
+  ))
+}
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

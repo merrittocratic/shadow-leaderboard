@@ -22,15 +22,12 @@ HOLDOUT_EVENTS <- list(
 )
 
 # Paths
-PATH_CACHE  <- here::here("data", "cache")
-PATH_DATA   <- here::here("data")
-PATH_OUTPUT <- here::here("output")
-PATH_CONFIG <- here::here("config")
+PATH_CACHE    <- here::here("data", "cache")
+PATH_DATA     <- here::here("data")
+PATH_OUTPUT   <- here::here("output")
+PATH_CONFIG   <- here::here("config")
+PATH_GRAPHICS <- here::here("graphics")
 
-# Validate that the API key was injected — fail loudly at startup
-if (nchar(DG_API_KEY) == 0) {
-  cli_abort(c(
-    "GOLF_API_KEY is not set.",
-    "i" = "Run scripts via: op run --env-file=.env.template -- Rscript R/<script>.R"
-  ))
-}
+# API key validation lives in datagolf_api.R, not here, so that scripts
+# which read from cache (02, 03, 04) can source 00_config.R without
+# requiring op run.
