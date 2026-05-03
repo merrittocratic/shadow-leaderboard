@@ -1,0 +1,42 @@
+# Data (regenerated from scripts or API)
+data/*.rds
+data/*.csv
+data/**/*.rds
+data/**/*.csv
+data/cache/
+
+# R artifacts
+.Rhistory
+.Rdata
+.Rproj.user/
+*.Rproj
+
+# Model outputs (large binary files)
+output/models/*.rds
+
+# Generated CSVs (content outputs — regenerate from scripts)
+output/*.csv
+
+# Generated figures (binary outputs — regenerate from scripts)
+graphics/*.png
+graphics/*.jpg
+graphics/*.svg
+graphics/**/*.png
+graphics/**/*.jpg
+graphics/**/*.svg
+
+# Quarto rendered outputs
+_site/
+*.html
+**/*_files/
+
+# Content drafts (unpublished — never commit half-finished prose)
+content/drafts/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets — never commit
+.env
+.Renviron
