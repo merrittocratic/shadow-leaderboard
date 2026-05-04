@@ -17,7 +17,14 @@ cli_h1("Week 2 -- four model skeletons, default hyperparameters")
 
 # ---- Load and split data --------------------------------------------------
 
-player_rounds <- readRDS(file.path(PATH_DATA, "02_player_rounds.rds"))
+player_rounds_base <- readRDS(file.path(PATH_DATA, "02_player_rounds.rds"))
+form_features      <- readRDS(file.path(PATH_DATA, "02b_form_features.rds"))
+
+player_rounds <- left_join(
+  player_rounds_base,
+  select(form_features, -event_completed),
+  by = c("dg_id", "event_id", "year")
+)
 
 # Confirm held-out event names by checking what's in 2025/2026
 holdout_events <- player_rounds |>

@@ -22,7 +22,11 @@ gbdt_recipe <- function(train_data) {
   recipe(
     sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
       sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
-      course_id + year,
+      course_id + year +
+      form_residual_mean_4  + form_residual_mean_8  +
+      form_residual_mean_12 + form_residual_mean_16 +
+      form_residual_slope_4  + form_residual_slope_8  +
+      form_residual_slope_12 + form_residual_slope_16,
     data = train_data
   ) |>
     step_mutate(is_major = as.integer(is_major)) |>  # logical -> 0/1 for tree models
@@ -53,10 +57,12 @@ lgbm_spec <- boost_tree(
 
 # ---- lme4 formula ---------------------------------------------------------
 # Random intercepts for player and course — the minimal two-level structure.
+# Form features at N=8 (single window; Week 3 sensitivity will sweep N).
 # Week 3 sensitivity: add random slopes for round_num and is_major.
 
 lmer_formula <- sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
   sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
+  form_residual_mean_8 + form_residual_slope_8 +
   (1 | player_id) + (1 | course_id)
 
 # ---- brms formula + priors ------------------------------------------------
@@ -96,7 +102,8 @@ prep_for_lme <- function(df, ref_df = NULL) {
   if (is.null(ref_df)) ref_df <- df
 
   prior_cols <- c("player_skill_prior", "sg_ott_prior", "sg_app_prior",
-                  "sg_arg_prior", "sg_putt_prior")
+                  "sg_arg_prior", "sg_putt_prior",
+                  "form_residual_mean_8", "form_residual_slope_8")
 
   for (col in prior_cols) {
     fill_val  <- mean(ref_df[[col]], na.rm = TRUE)

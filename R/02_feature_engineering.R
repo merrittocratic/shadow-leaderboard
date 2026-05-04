@@ -74,8 +74,8 @@ player_rounds <- player_rounds_raw |>
   mutate(
     # AM / PM wave from tee time string ("7:15am", "1:35pm")
     wave = case_when(
-      str_detect(teetime, fixed("am")) ~ "AM",
-      str_detect(teetime, fixed("pm")) ~ "PM",
+      str_detect(teetime, stringr::fixed("am")) ~ "AM",
+      str_detect(teetime, stringr::fixed("pm")) ~ "PM",
       TRUE                             ~ NA_character_
     ) |> factor(),
 
@@ -114,11 +114,11 @@ skill_priors <- year_sg_means |>
   group_by(dg_id) |>
   mutate(
     # cummean up through year t-1 via lag — expanding window, no leakage
-    player_skill_prior = lag(cummean(sg_total_yr)),
-    sg_ott_prior       = lag(cummean(sg_ott_yr)),
-    sg_app_prior       = lag(cummean(sg_app_yr)),
-    sg_arg_prior       = lag(cummean(sg_arg_yr)),
-    sg_putt_prior      = lag(cummean(sg_putt_yr))
+    player_skill_prior = dplyr::lag(cummean(sg_total_yr)),
+    sg_ott_prior       = dplyr::lag(cummean(sg_ott_yr)),
+    sg_app_prior       = dplyr::lag(cummean(sg_app_yr)),
+    sg_arg_prior       = dplyr::lag(cummean(sg_arg_yr)),
+    sg_putt_prior      = dplyr::lag(cummean(sg_putt_yr))
   ) |>
   ungroup() |>
   select(dg_id, year,

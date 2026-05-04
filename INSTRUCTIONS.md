@@ -145,7 +145,42 @@ it as features.
 - **Course:** course-class indicator + within-class course-fit with shrinkage
 - **Situational:** cut-line proximity (R2-specific), leader-board pressure
   spread (R4-specific)
-- **Recent form:** rolling SG trends (DataGolf provides; tune window length)
+- **Recent form:** three-layer hot-streak / regime-change detection (see
+  Form Features subsection below; N tuned per feature via CV)
+
+### Form Features: Hot-Streak / Regime-Change Detection
+Built on top of DataGolf's exponential-decay player prior to capture what
+it misses: genuine regime change. DataGolf's decay handles ordinary recency
+weighting upstream; these features target the gap.
+
+**Feature (a) — Recent-Form Residual:** per player, mean of
+(actual SG − player skill prior) over their last N events. Captures
+systematic underestimation by the long-horizon prior.
+
+**Feature (b) — Form Trend Slope:** per player, simple linear-trend
+slope of those same residuals over the last N events. Distinguishes
+"hot right now" from "stepped up to a new level."
+
+**Feature (c) — Structural Break / Regime Change:** modeled natively in
+brms via random effects on player-season-segment. NOT a design-matrix
+column. GBDT candidates get (a) and (b) only; lme4 gets a simplified
+version via random slopes on player-season; brms gets the full
+hierarchical treatment. This asymmetric advantage for brms is intentional
+— it is the single biggest reason brms justifies its compute cost.
+
+**Lookback window N:** tunable hyperparameter, swept independently for
+(a) and (b). Candidate values: 4, 8, 12, 16 events. N for the level and
+N for the slope are not assumed equal.
+
+**Event definition:** every PGA Tour start = 1 event regardless of
+strength-of-field. Missed cuts count (SG through 36 holes included).
+
+**Point-in-time correctness:** form features use only data available
+pre-event. A unit test in `tests/test_form_features.R` enforces this on
+every computation run — no exceptions.
+
+**Caching:** features are cached per N value in `data/cache/form/` so
+the N sweep does not recompute across CV folds.
 
 ### Known Constraint: Course-Fit Signal Is Weak
 DataGolf's own published guidance: their work shows course fit "does not have
@@ -221,6 +256,29 @@ Most demanding option of the three considered (field-only, player-only, joint).
 Required to make the residual mean what we want it to mean. Implementation
 naturally falls out of any of the four Tier 1 candidates with player-skill and
 condition features — no separate baseline model needed.
+
+### Form Features: Three-Layer Hot-Streak / Regime-Change Detection
+DataGolf's exponential-decay player prior handles ordinary recency
+weighting. What it does not catch fast enough is genuine regime change —
+a player whose underlying skill has structurally stepped up (Cam Young
+2026 as the motivating example). Decision: build three form features on
+top of the DataGolf prior rather than replacing it.
+
+**Double-counting risk acknowledged.** The DataGolf prior already
+incorporates recency weighting. These features are explicitly additive
+corrections on top of that prior. If the prior were perfect at detecting
+regime change, these features would show zero weight in validation and
+get dropped. That is the test.
+
+**Asymmetric brms advantage is intentional.** The structural-break
+modeling via player-season-segment random effects is the strongest single
+justification for brms's computational cost. If brms wins in Week 4
+validation, the form-feature architecture is part of why. The GBDT
+candidates get features (a) and (b); they do not get (c).
+
+**N is tunable and swept independently per feature.** No reason the
+optimal lookback for the residual level equals the optimal lookback for
+the slope. Candidate values: 4, 8, 12, 16 events; CV picks per feature.
 
 ### Manual Substack Publishing (No API Automation in MVP)
 Substack has no official publishing API. Unofficial APIs exist (session-cookie
