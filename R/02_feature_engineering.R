@@ -128,17 +128,24 @@ skill_priors <- year_sg_means |>
 player_rounds <- player_rounds |>
   left_join(skill_priors, by = c("dg_id", "year"))
 
-# ---- 4. Target: field-average SG residual ---------------------------------
-# Residual vs. field mean within each event × round stratum.
-# This is the Week 2 baseline; Week 3 refines to player × conditions baseline.
+# ---- 4. Target: player-centered SG residual --------------------------------
+# sg_residual = sg_total - player_skill_prior
+# "How much did this player outperform their own expected level this round?"
+# The conditions component of the joint baseline is handled by model features.
+# First-year players (NA prior) fall back to field-mean residual — keeps them
+# in training without distorting the target distribution.
 
 player_rounds <- player_rounds |>
   group_by(event_id, year, round_num) |>
+  mutate(field_mean_sg = mean(sg_total, na.rm = TRUE)) |>
+  ungroup() |>
   mutate(
-    field_mean_sg = mean(sg_total, na.rm = TRUE),
-    sg_residual   = sg_total - field_mean_sg
-  ) |>
-  ungroup()
+    sg_residual = if_else(
+      !is.na(player_skill_prior),
+      sg_total - player_skill_prior,
+      sg_total - field_mean_sg       # first-year fallback
+    )
+  )
 
 # ---- 5. Data quality checks -----------------------------------------------
 

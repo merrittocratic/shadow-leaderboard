@@ -5,7 +5,8 @@
 # lme4, brms: direct model calls — random effects structure is cleaner outside
 #             the parsnip abstraction layer
 #
-# Week 2: all default hyperparameters. Tuning is Week 3.
+# Week 2: default hyperparameter specs (xgb_spec, lgbm_spec) used by 04_train_evaluate.R
+# Week 3: tunable specs (xgb_spec_tune, lgbm_spec_tune) used by 05_tune.R
 
 library(tidymodels)
 library(bonsai)       # LightGBM parsnip engine
@@ -56,24 +57,62 @@ lgbm_spec <- boost_tree(
   set_mode("regression")
 
 # ---- lme4 formula ---------------------------------------------------------
-# Random intercepts for player and course — the minimal two-level structure.
-# Form features at N=8 (single window; Week 3 sensitivity will sweep N).
-# Week 3 sensitivity: add random slopes for round_num and is_major.
+# Random intercepts for player and course.
+# Random slope on form_residual_mean_8 | player_id: each player can respond
+# differently to being in form — the simplified structural-break analog for lme4.
 
 lmer_formula <- sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
   sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
   form_residual_mean_8 + form_residual_slope_8 +
-  (1 | player_id) + (1 | course_id)
+  (1 + form_residual_mean_8 | player_id) + (1 | course_id)
+
+# ---- Tunable GBDT specs (used by 05_tune.R) --------------------------------
+# tune() placeholders for tune_race_anova(). Do not use with fit() directly.
+
+xgb_spec_tune <- boost_tree(
+  trees       = tune(),
+  tree_depth  = tune(),
+  learn_rate  = tune(),
+  min_n       = tune(),
+  sample_size = tune()
+) |>
+  set_engine("xgboost", nthread = parallel::detectCores()) |>
+  set_mode("regression")
+
+lgbm_spec_tune <- boost_tree(
+  trees       = tune(),
+  tree_depth  = tune(),
+  learn_rate  = tune(),
+  min_n       = tune(),
+  sample_size = tune()
+) |>
+  set_engine("lightgbm", num_threads = parallel::detectCores()) |>
+  set_mode("regression")
 
 # ---- brms formula + priors ------------------------------------------------
 # Mirrors lme4 structure. Weakly informative priors — SG residuals are
 # centred near 0 with SD ~2, so normal(0,1) on coefficients is conservative.
 # Week 3: posterior predictive checks will guide prior refinement.
 
+# Subsample formula (04_train_evaluate.R — structure validation only)
 brms_formula <- bf(
   sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
     sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
+    form_residual_mean_8 + form_residual_slope_8 +
     (1 | player_id) + (1 | course_id)
+)
+
+# Full-data formula (06_brms_full.R) — adds player-season structural break.
+# player_season = factor(paste(player_id, year)) — created in 06_brms_full.R.
+# player_skill_prior dropped: coefficient was -0.99, signal fully absorbed by
+# (1 | player_id) random effects. Keeping it degraded out-of-sample RMSE.
+brms_formula_full <- bf(
+  sg_residual ~ sg_ott_prior + sg_app_prior +
+    sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
+    form_residual_mean_8 + form_residual_slope_8 +
+    (1 | player_id) +        # population-level player intercept
+    (1 | player_season) +    # structural break: per-player-year deviation
+    (1 | course_id)
 )
 
 brms_priors <- c(
