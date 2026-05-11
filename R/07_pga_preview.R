@@ -219,7 +219,10 @@ score_frame <- field_players |>
     is_major  = TRUE,               # PGA Championship is a major
     course_id = factor("pga_champ_2026"),
     year      = 2026L,
-    player_id = factor(dg_id)
+    player_id = factor(dg_id),
+    sg_r1     = NA_real_,           # no prior rounds pre-tournament; imputed by recipe
+    sg_r2     = NA_real_,
+    sg_r3     = NA_real_
   ) |>
   # Impute missing priors with training set means
   mutate(across(
@@ -260,7 +263,7 @@ cli_alert_success("Saved ranked table to {out_csv}")
 
 # Print top 20
 cli_h2("Top 20 — PGA Championship 2026 (model: {toupper(best_model_name)}, ranked by predicted SG total)")
-print(slice(ranked_table, 1:20), n = 20)
+print(slice(ranked_table, 1:30), n = 30)
 
 cli_alert_info(
   "Note: model in active development. Target variable and hyperparameters ",

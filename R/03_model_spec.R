@@ -24,6 +24,7 @@ gbdt_recipe <- function(train_data) {
     sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
       sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
       course_id + year +
+      sg_r1 + sg_r2 + sg_r3 +
       form_residual_mean_4  + form_residual_mean_8  +
       form_residual_mean_12 + form_residual_mean_16 +
       form_residual_slope_4  + form_residual_slope_8  +
@@ -63,6 +64,7 @@ lgbm_spec <- boost_tree(
 
 lmer_formula <- sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
   sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
+  sg_r1 + sg_r2 + sg_r3 +
   form_residual_mean_8 + form_residual_slope_8 +
   (1 + form_residual_mean_8 | player_id) + (1 | course_id)
 
@@ -98,6 +100,7 @@ lgbm_spec_tune <- boost_tree(
 brms_formula <- bf(
   sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
     sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
+    sg_r1 + sg_r2 + sg_r3 +
     form_residual_mean_8 + form_residual_slope_8 +
     (1 | player_id) + (1 | course_id)
 )
@@ -109,6 +112,7 @@ brms_formula <- bf(
 brms_formula_full <- bf(
   sg_residual ~ sg_ott_prior + sg_app_prior +
     sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
+    sg_r1 + sg_r2 + sg_r3 +
     form_residual_mean_8 + form_residual_slope_8 +
     (1 | player_id) +        # population-level player intercept
     (1 | player_season) +    # structural break: per-player-year deviation
@@ -142,7 +146,8 @@ prep_for_lme <- function(df, ref_df = NULL) {
 
   prior_cols <- c("player_skill_prior", "sg_ott_prior", "sg_app_prior",
                   "sg_arg_prior", "sg_putt_prior",
-                  "form_residual_mean_8", "form_residual_slope_8")
+                  "form_residual_mean_8", "form_residual_slope_8",
+                  "sg_r1", "sg_r2", "sg_r3")
 
   for (col in prior_cols) {
     fill_val  <- mean(ref_df[[col]], na.rm = TRUE)

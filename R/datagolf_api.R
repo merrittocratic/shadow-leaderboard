@@ -144,6 +144,69 @@ dg_field_tee_times <- function(tour = "pga", force_refresh = FALSE) {
   data
 }
 
+#' Live tournament strokes-gained (current event in progress)
+#'
+#' Returns cumulative SG by category for all players in the current event.
+#' Cache key is per-hour so re-runs within the same hour hit cache; pass
+#' force_refresh = TRUE for the freshest data during a live round.
+#'
+#' @param sg  Comma-separated SG stats to return.
+#' @param force_refresh  If TRUE, bypass cache.
+#'
+#' @return List with tournament metadata and a data frame of player SG.
+dg_live_strokes_gained <- function(
+    sg            = "sg_putt,sg_arg,sg_app,sg_ott,sg_t2g,sg_total",
+    force_refresh = FALSE) {
+  key        <- paste0("live_sg_", format(Sys.time(), "%Y%m%d_%H"))
+  cache_file <- .dg_cache_path("live_sg", key)
+
+  if (!force_refresh && file.exists(cache_file)) {
+    cli_alert_info("Cache hit: live_sg/{key}")
+    return(.dg_read_cache(cache_file))
+  }
+
+  cli_alert_info("Fetching live strokes-gained")
+  data <- .dg_get("preds/live-strokes-gained", list(sg = sg, file_format = "json"))
+  .dg_write_cache(data, cache_file)
+  cli_alert_success("Cached: live_sg/{key}")
+  data
+}
+
+#' Live per-round or cumulative tournament stats (current event)
+#'
+#' Use round = 1, 2, 3, or 4 to get a specific completed round's SG data.
+#' Use round = "event_cumulative" for totals through the latest completed round.
+#' Cache key is per-hour — pass force_refresh = TRUE during live scoring.
+#'
+#' @param stats   Comma-separated stats to return.
+#' @param round   Round number (1-4), "event_cumulative", or "event_avg".
+#' @param display "value" (default) or "rank".
+#' @param force_refresh  If TRUE, bypass cache.
+#'
+#' @return List with tournament metadata and a data frame of player stats.
+dg_live_tournament_stats <- function(
+    stats         = "sg_putt,sg_arg,sg_app,sg_ott,sg_total",
+    round         = "event_cumulative",
+    display       = "value",
+    force_refresh = FALSE) {
+  key        <- paste0("live_stats_r", round, "_", format(Sys.time(), "%Y%m%d_%H"))
+  cache_file <- .dg_cache_path("live_tournament_stats", key)
+
+  if (!force_refresh && file.exists(cache_file)) {
+    cli_alert_info("Cache hit: live_tournament_stats/{key}")
+    return(.dg_read_cache(cache_file))
+  }
+
+  cli_alert_info("Fetching live tournament stats: round={round}")
+  data <- .dg_get(
+    "preds/live-tournament-stats",
+    list(stats = stats, round = round, display = display, file_format = "json")
+  )
+  .dg_write_cache(data, cache_file)
+  cli_alert_success("Cached: live_tournament_stats/{key}")
+  data
+}
+
 #' Historical event-level strokes-gained stats
 #'
 #' @param tour  Tour code. Default "pga".

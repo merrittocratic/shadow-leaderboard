@@ -1,11 +1,11 @@
 source("R/00_config.R")
 
 # Flatten the cached per-year DataGolf JSON into a tidy player-round table,
-# compute features and the Week 2 baseline residual target.
+# compute features and the player-centered residual target.
 #
-# Target (Week 2 baseline):
-#   sg_residual = sg_total - field_mean_sg  (within event × round stratum)
-#   Week 3 replaces this with the proper player × conditions joint baseline.
+# Target: sg_residual = sg_total - player_skill_prior
+# Week 4 addition: sg_r1/sg_r2/sg_r3 — in-tournament prior-round SG features
+#   for the live leaderboard engine (08_live_leaderboard.R).
 #
 # Run directly — no API key required:
 #   Rscript R/02_feature_engineering.R
@@ -26,12 +26,20 @@ flatten_event <- function(event) {
   player_cols <- setdiff(names(scores), paste0("round_", 1:4))
   player_info <- as_tibble(scores[, player_cols, drop = FALSE])
 
+  # Pre-build per-player prior-round SG lookup (rounds 1-3 only; sg_r4 is
+  # never a predictor since there is no round 5 to predict).
+  sg_lookup <- player_info |> select(dg_id)
+  for (i in 1:3) {
+    rd <- if (i <= length(round_cols)) scores[[round_cols[[i]]]] else NULL
+    sg_lookup[[paste0("sg_r", i)]] <- if (is.data.frame(rd)) rd$sg_total else NA_real_
+  }
+
   map_dfr(seq_along(round_cols), function(i) {
     col      <- round_cols[[i]]
     round_df <- scores[[col]]
     if (!is.data.frame(round_df)) return(NULL)
 
-    bind_cols(
+    out <- bind_cols(
       player_info,
       as_tibble(round_df),
       tibble(
@@ -42,7 +50,15 @@ flatten_event <- function(event) {
         event_completed = as.Date(event$event_completed)
       )
     ) |>
-      filter(!is.na(sg_total))  # drop rounds player didn't play (WD / post-cut)
+      filter(!is.na(sg_total)) |>   # drop rounds player didn't play (WD / post-cut)
+      left_join(sg_lookup, by = "dg_id")
+
+    # Mask current and future rounds — only strictly prior rounds are valid features
+    for (j in 1:3) {
+      if (j >= i) out[[paste0("sg_r", j)]] <- NA_real_
+    }
+
+    out
   })
 }
 
@@ -165,6 +181,14 @@ na_prior_pct <- round(mean(is.na(player_rounds$player_skill_prior)) * 100, 1)
 cli_alert_info(
   "player_skill_prior NA rate: {na_prior_pct}% ",
   "(expected ~{round(1 / length(years) * 100, 0)}% for first-year players)"
+)
+
+r_na_rates <- sapply(c("sg_r1", "sg_r2", "sg_r3"), function(col) {
+  round(mean(is.na(player_rounds[[col]])) * 100, 1)
+})
+cli_alert_info(
+  "In-tournament feature NA rates (expected ~25%/50%/75% for r1/r2/r3): ",
+  "{paste(names(r_na_rates), r_na_rates, sep='=', collapse=', ')}%"
 )
 
 events_per_year <- player_rounds |>
