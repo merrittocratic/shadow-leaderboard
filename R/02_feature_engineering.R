@@ -108,9 +108,85 @@ player_rounds <- player_rounds_raw |>
     round_num = as.integer(round_num)
   )
 
-# ---- 3. Player skill priors -----------------------------------------------
+# ---- 3. DP World Tour supplement ------------------------------------------
+# Euro cache files supply sg_total only (no SG components).
+# Each euro round is discounted to EURO_ROUND_WEIGHT effective PGA rounds
+# before being blended into total-SG year means.
+# Component priors (sg_ott, sg_app, sg_arg, sg_putt) stay PGA-only.
+
+EURO_ROUND_WEIGHT <- 0.5   # empirically derived: OLS coef euro→PGA = 0.51
+
+cli_h2("Loading DP World Tour supplement (euro rounds)")
+
+flatten_euro_sg <- function(event) {
+  scores     <- event$scores
+  round_cols <- intersect(paste0("round_", 1:4), names(scores))
+  player_info <- as_tibble(scores[, c("dg_id", "player_name"), drop = FALSE]) |>
+    mutate(dg_id = as.integer(dg_id))
+  purrr::map_dfr(seq_along(round_cols), function(i) {
+    rd <- scores[[round_cols[[i]]]]
+    if (!is.data.frame(rd) || !"sg_total" %in% names(rd)) return(NULL)
+    bind_cols(player_info,
+              tibble(sg_total = rd$sg_total, year = event$year)) |>
+      filter(!is.na(sg_total))
+  })
+}
+
+euro_files <- list.files(
+  file.path(PATH_CACHE, "historical_raw"),
+  pattern = "^euro_\\d{4}\\.rds$",
+  full.names = TRUE
+)
+
+euro_rounds <- purrr::map_dfr(euro_files, \(f) purrr::map_dfr(readRDS(f), flatten_euro_sg))
+cli_alert_success(
+  "Euro rounds: {scales::comma(nrow(euro_rounds))} across years ",
+  "{paste(sort(unique(euro_rounds$year)), collapse=', ')}"
+)
+
+year_sg_euro <- euro_rounds |>
+  group_by(dg_id, year) |>
+  summarise(
+    sg_total_euro = mean(sg_total, na.rm = TRUE),
+    n_rounds_euro = n(),
+    .groups       = "drop"
+  )
+
+# ---- 4. Player skill priors -----------------------------------------------
 # Year-level expanding mean, leave-current-year-out.
 # For a player's first year the prior is NA — imputed in model recipes.
+#
+# player_skill_prior        : unweighted expanding mean (stable baseline)
+# player_skill_prior_decay  : exponentially decay-weighted mean (recent years
+#                             count more; PRIOR_DECAY = 0.75 ≈ 2.4-year half-life)
+# n_prior_rounds            : effective rounds in prior history (PGA + 0.5*euro)
+# All three benefit from euro enrichment; component priors are PGA-only.
+
+PRIOR_DECAY <- 0.75   # per-year decay factor
+
+# Cumulative mean that skips NA entries (needed for euro-only year rows
+# that have no component SG data).
+cummean_na <- function(x) {
+  n <- cumsum(!is.na(x))
+  s <- cumsum(replace(x, is.na(x), 0))
+  ifelse(n > 0L, s / n, NA_real_)
+}
+
+# Decay-weighted mean of x[1..n], ordered oldest → newest.
+decay_prior_series <- function(x, decay = PRIOR_DECAY) {
+  n      <- length(x)
+  result <- rep(NA_real_, n)
+  for (i in seq_len(n)) {
+    if (i == 1L) next
+    past  <- x[seq_len(i - 1L)]
+    valid <- !is.na(past)
+    if (!any(valid)) next
+    w <- decay^seq(length(past) - 1L, 0L, by = -1L)
+    w[!valid] <- 0
+    result[[i]] <- sum(w * replace(past, !valid, 0)) / sum(w)
+  }
+  result
+}
 
 cli_h2("Computing player skill priors")
 
@@ -122,24 +198,58 @@ year_sg_means <- player_rounds |>
     sg_app_yr   = mean(sg_app,   na.rm = TRUE),
     sg_arg_yr   = mean(sg_arg,   na.rm = TRUE),
     sg_putt_yr  = mean(sg_putt,  na.rm = TRUE),
+    n_rounds_yr = n(),
     .groups     = "drop"
   ) |>
   arrange(dg_id, year)
 
-skill_priors <- year_sg_means |>
+# Blend euro into PGA total-SG year means.
+# full_join adds euro-only rows (years with no PGA data) so they contribute
+# to the prior timeline even for players not yet on the PGA Tour.
+year_sg_aug <- year_sg_means |>
+  select(dg_id, year, sg_total_yr, n_rounds_yr) |>
+  full_join(year_sg_euro, by = c("dg_id", "year")) |>
+  mutate(
+    n_pga      = coalesce(as.double(n_rounds_yr), 0.0),
+    n_euro_eff = coalesce(as.double(n_rounds_euro), 0.0) * EURO_ROUND_WEIGHT,
+    sg_total_yr = case_when(
+      !is.na(sg_total_yr) & !is.na(sg_total_euro) ~
+        (sg_total_yr * n_pga + EURO_ROUND_WEIGHT * sg_total_euro * n_rounds_euro) /
+        (n_pga + n_euro_eff),
+      !is.na(sg_total_yr) ~ sg_total_yr,
+      TRUE ~ EURO_ROUND_WEIGHT * sg_total_euro   # euro-only year
+    ),
+    n_rounds_yr = as.integer(round(n_pga + n_euro_eff))
+  ) |>
+  filter(n_rounds_yr > 0L) |>
+  select(dg_id, year, sg_total_yr, n_rounds_yr) |>
+  arrange(dg_id, year)
+
+# Total-SG priors: static + decay, n_prior_rounds — all from combined data
+total_priors <- year_sg_aug |>
   group_by(dg_id) |>
   mutate(
-    # cummean up through year t-1 via lag — expanding window, no leakage
-    player_skill_prior = dplyr::lag(cummean(sg_total_yr)),
-    sg_ott_prior       = dplyr::lag(cummean(sg_ott_yr)),
-    sg_app_prior       = dplyr::lag(cummean(sg_app_yr)),
-    sg_arg_prior       = dplyr::lag(cummean(sg_arg_yr)),
-    sg_putt_prior      = dplyr::lag(cummean(sg_putt_yr))
+    player_skill_prior       = dplyr::lag(cummean_na(sg_total_yr)),
+    player_skill_prior_decay = decay_prior_series(sg_total_yr),
+    n_prior_rounds           = dplyr::lag(cumsum(n_rounds_yr))
   ) |>
   ungroup() |>
-  select(dg_id, year,
-         player_skill_prior, sg_ott_prior, sg_app_prior,
-         sg_arg_prior, sg_putt_prior)
+  select(dg_id, year, player_skill_prior, player_skill_prior_decay, n_prior_rounds)
+
+# Component priors: PGA-only (euro has no sg_ott/app/arg/putt)
+component_priors <- year_sg_means |>
+  group_by(dg_id) |>
+  mutate(
+    sg_ott_prior  = dplyr::lag(cummean(sg_ott_yr)),
+    sg_app_prior  = dplyr::lag(cummean(sg_app_yr)),
+    sg_arg_prior  = dplyr::lag(cummean(sg_arg_yr)),
+    sg_putt_prior = dplyr::lag(cummean(sg_putt_yr))
+  ) |>
+  ungroup() |>
+  select(dg_id, year, sg_ott_prior, sg_app_prior, sg_arg_prior, sg_putt_prior)
+
+skill_priors <- total_priors |>
+  left_join(component_priors, by = c("dg_id", "year"))
 
 player_rounds <- player_rounds |>
   left_join(skill_priors, by = c("dg_id", "year"))

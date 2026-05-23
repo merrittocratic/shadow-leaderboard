@@ -45,7 +45,7 @@ detect_completed_round <- function() {
   for (r in 3:1) {
     tryCatch({
       d <- dg_live_tournament_stats(round = r, force_refresh = TRUE)
-      players <- d[["rankings"]] %||% d[["data"]] %||% d[[1]]
+      players <- d[["live_stats"]] %||% d[["rankings"]] %||% d[["data"]] %||% d[[1]]
       if (is.data.frame(players) && nrow(players) > 0) return(r)
     }, error = function(e) NULL)
   }
@@ -74,7 +74,7 @@ pull_round_sg <- function(r) {
     round         = r,
     force_refresh = TRUE
   )
-  players <- raw[["rankings"]] %||% raw[["data"]] %||% raw[[1]]
+  players <- raw[["live_stats"]] %||% raw[["rankings"]] %||% raw[["data"]] %||% raw[[1]]
   if (!is.data.frame(players)) {
     cli_abort("Unexpected response structure from live-tournament-stats (round {r}).")
   }
@@ -106,12 +106,22 @@ field_players <- as_tibble(field_raw$field) |>
 
 cli_alert_info("{nrow(field_players)} players in field")
 
-# For rounds 3–4, filter to players who made the cut (have round 2 data).
+# For rounds 3–4, filter to players who made the cut.
+# DataGolf does not return an explicit "MC" flag — positions are numeric strings
+# ("T83", "T96", etc.) for all players including those who missed. Filter to
+# position ≤ 70 using the cached R2 data (no extra API call).
 if (completed_round >= 2L) {
-  made_cut <- live_sg |> filter(!is.na(sg_r2)) |> pull(dg_id)
+  r2_raw     <- dg_live_tournament_stats(round = 2L, force_refresh = FALSE)
+  r2_players <- r2_raw[["live_stats"]] %||% r2_raw[["rankings"]] %||%
+                r2_raw[["data"]] %||% r2_raw[[1]]
+  made_cut <- as_tibble(r2_players) |>
+    mutate(dg_id   = as.integer(dg_id),
+           pos_num = as.integer(stringr::str_remove(position, "^T"))) |>
+    filter(!is.na(pos_num), pos_num <= 70L) |>
+    pull(dg_id)
   field_players <- field_players |> filter(dg_id %in% made_cut)
   cli_alert_info(
-    "{nrow(field_players)} players remain after cut (round {completed_round} complete)"
+    "{nrow(field_players)} players remain after cut filter (position ≤ 70)"
   )
 }
 
@@ -127,11 +137,13 @@ skill_priors_latest <- player_rounds_hist |>
   group_by(dg_id) |>
   filter(year == max(year)) |>
   summarise(
-    player_skill_prior = first(na.omit(player_skill_prior)),
-    sg_ott_prior       = first(na.omit(sg_ott_prior)),
-    sg_app_prior       = first(na.omit(sg_app_prior)),
-    sg_arg_prior       = first(na.omit(sg_arg_prior)),
-    sg_putt_prior      = first(na.omit(sg_putt_prior)),
+    player_skill_prior       = first(na.omit(player_skill_prior)),
+    player_skill_prior_decay = first(na.omit(player_skill_prior_decay)),
+    n_prior_rounds           = first(na.omit(n_prior_rounds)),
+    sg_ott_prior             = first(na.omit(sg_ott_prior)),
+    sg_app_prior             = first(na.omit(sg_app_prior)),
+    sg_arg_prior             = first(na.omit(sg_arg_prior)),
+    sg_putt_prior            = first(na.omit(sg_putt_prior)),
     .groups = "drop"
   )
 
@@ -225,7 +237,9 @@ score_frame <- field_players |>
     player_id = factor(dg_id)
   ) |>
   mutate(across(
-    c(player_skill_prior, sg_ott_prior, sg_app_prior,
+    c(player_skill_prior, player_skill_prior_decay,
+      n_prior_rounds,
+      sg_ott_prior, sg_app_prior,
       sg_arg_prior, sg_putt_prior,
       starts_with("form_residual"),
       starts_with("sg_r")),
@@ -263,12 +277,14 @@ ranked_table <- score_frame |>
 
 # ---- Save and print -------------------------------------------------------
 
-out_csv <- file.path(
-  PATH_OUTPUT,
-  paste0("live_leaderboard_after_r", completed_round, ".csv")
-)
+out_stem <- file.path(PATH_OUTPUT, paste0("live_leaderboard_after_r", completed_round))
+out_csv  <- paste0(out_stem, ".csv")
+out_rds  <- paste0(out_stem, ".rds")
+
 write_csv(ranked_table, out_csv)
-cli_alert_success("Saved to {out_csv}")
+saveRDS(ranked_table, out_rds)
+cli_alert_success("Saved: {out_csv}")
+cli_alert_success("Saved: {out_rds}")
 
 cli_h2(
   "Shadow Leaderboard — Round {next_round} projections ",

@@ -21,7 +21,9 @@ tidymodels_prefer()
 
 gbdt_recipe <- function(train_data) {
   recipe(
-    sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
+    sg_residual ~ player_skill_prior + player_skill_prior_decay +
+      n_prior_rounds +
+      sg_ott_prior + sg_app_prior +
       sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
       course_id + year +
       sg_r1 + sg_r2 + sg_r3 +
@@ -62,7 +64,8 @@ lgbm_spec <- boost_tree(
 # Random slope on form_residual_mean_8 | player_id: each player can respond
 # differently to being in form — the simplified structural-break analog for lme4.
 
-lmer_formula <- sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
+lmer_formula <- sg_residual ~ player_skill_prior + player_skill_prior_decay +
+  n_prior_rounds + sg_ott_prior + sg_app_prior +
   sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
   sg_r1 + sg_r2 + sg_r3 +
   form_residual_mean_8 + form_residual_slope_8 +
@@ -98,7 +101,8 @@ lgbm_spec_tune <- boost_tree(
 
 # Subsample formula (04_train_evaluate.R — structure validation only)
 brms_formula <- bf(
-  sg_residual ~ player_skill_prior + sg_ott_prior + sg_app_prior +
+  sg_residual ~ player_skill_prior + player_skill_prior_decay +
+    n_prior_rounds + sg_ott_prior + sg_app_prior +
     sg_arg_prior + sg_putt_prior + wave + round_num + is_major +
     sg_r1 + sg_r2 + sg_r3 +
     form_residual_mean_8 + form_residual_slope_8 +
@@ -144,7 +148,9 @@ brms_ctrl <- list(
 prep_for_lme <- function(df, ref_df = NULL) {
   if (is.null(ref_df)) ref_df <- df
 
-  prior_cols <- c("player_skill_prior", "sg_ott_prior", "sg_app_prior",
+  prior_cols <- c("player_skill_prior", "player_skill_prior_decay",
+                  "n_prior_rounds",
+                  "sg_ott_prior", "sg_app_prior",
                   "sg_arg_prior", "sg_putt_prior",
                   "form_residual_mean_8", "form_residual_slope_8",
                   "sg_r1", "sg_r2", "sg_r3")
