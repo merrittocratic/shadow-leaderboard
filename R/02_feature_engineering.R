@@ -254,7 +254,36 @@ skill_priors <- total_priors |>
 player_rounds <- player_rounds |>
   left_join(skill_priors, by = c("dg_id", "year"))
 
-# ---- 4. Target: player-centered SG residual --------------------------------
+# ---- 5. Course-fit score ---------------------------------------------------
+# course_fit_score = weighted sum of SG component priors, where weights reflect
+# how discriminating each skill is at that venue (from 02c_course_weights.R).
+# NA for courses not in the taxonomy or without component priors — imputed by
+# model recipes via step_impute_mean.
+
+course_weights_df <- readr::read_csv(
+  file.path(here::here(), "config", "course_taxonomy_weighted.csv"),
+  col_types = readr::cols(course_num = readr::col_integer(), .default = readr::col_guess()),
+  show_col_types = FALSE
+) |>
+  select(course_num, weight_ott, weight_app, weight_arg, weight_putt)
+
+player_rounds <- player_rounds |>
+  left_join(course_weights_df, by = "course_num") |>
+  mutate(
+    course_fit_score = weight_ott  * sg_ott_prior  +
+                       weight_app  * sg_app_prior  +
+                       weight_arg  * sg_arg_prior  +
+                       weight_putt * sg_putt_prior
+  ) |>
+  select(-weight_ott, -weight_app, -weight_arg, -weight_putt)
+
+n_fit_na <- sum(is.na(player_rounds$course_fit_score))
+cli_alert_info(
+  "course_fit_score: {scales::comma(nrow(player_rounds) - n_fit_na)} computed, ",
+  "{scales::comma(n_fit_na)} NA (will be imputed)"
+)
+
+# ---- 6. Target: player-centered SG residual --------------------------------
 # sg_residual = sg_total - player_skill_prior
 # "How much did this player outperform their own expected level this round?"
 # The conditions component of the joint baseline is handled by model features.

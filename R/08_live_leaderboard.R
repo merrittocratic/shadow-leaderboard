@@ -222,6 +222,40 @@ form_latest <- event_sg_all |>
     .groups = "drop"
   )
 
+# ---- Course-fit score -------------------------------------------------------
+# Detect tournament course_num from the live R1 stats data.
+
+r1_raw     <- dg_live_tournament_stats(round = 1L, force_refresh = FALSE)
+r1_players <- r1_raw[["live_stats"]] %||% r1_raw[["rankings"]] %||%
+              r1_raw[["data"]] %||% r1_raw[[1]]
+live_course_num <- if (is.data.frame(r1_players) && "course_num" %in% names(r1_players)) {
+  as.integer(r1_players$course_num[1])
+} else NA_integer_
+
+course_weights_df <- readr::read_csv(
+  file.path(here::here(), "config", "course_taxonomy_weighted.csv"),
+  col_types = readr::cols(course_num = readr::col_integer(), .default = readr::col_guess()),
+  show_col_types = FALSE
+) |>
+  filter(course_num == live_course_num) |>
+  select(weight_ott, weight_app, weight_arg, weight_putt)
+
+if (nrow(course_weights_df) == 0) {
+  cli_alert_warning("course_num {live_course_num} not in taxonomy — course_fit_score will be imputed")
+  course_weights_df <- tibble(
+    weight_ott = NA_real_, weight_app = NA_real_,
+    weight_arg = NA_real_, weight_putt = NA_real_
+  )
+} else {
+  cli_alert_info(
+    "Course weights (course_num {live_course_num}): ",
+    "OTT={round(course_weights_df$weight_ott,3)} ",
+    "APP={round(course_weights_df$weight_app,3)} ",
+    "ARG={round(course_weights_df$weight_arg,3)} ",
+    "PUTT={round(course_weights_df$weight_putt,3)}"
+  )
+}
+
 # ---- Assemble scoring frame -----------------------------------------------
 
 score_frame <- field_players |>
@@ -229,16 +263,21 @@ score_frame <- field_players |>
   left_join(form_latest,         by = "dg_id") |>
   left_join(live_sg,             by = "dg_id") |>
   mutate(
-    wave      = factor("AM"),       # tee times may not be set yet
+    wave      = factor("AM"),
     round_num = next_round,
     is_major  = TRUE,
     course_id = factor(paste0("live_", format(Sys.Date(), "%Y"))),
     year      = as.integer(format(Sys.Date(), "%Y")),
-    player_id = factor(dg_id)
+    player_id = factor(dg_id),
+    course_fit_score =
+      course_weights_df$weight_ott  * sg_ott_prior  +
+      course_weights_df$weight_app  * sg_app_prior  +
+      course_weights_df$weight_arg  * sg_arg_prior  +
+      course_weights_df$weight_putt * sg_putt_prior
   ) |>
   mutate(across(
     c(player_skill_prior, player_skill_prior_decay,
-      n_prior_rounds,
+      n_prior_rounds, course_fit_score,
       sg_ott_prior, sg_app_prior,
       sg_arg_prior, sg_putt_prior,
       starts_with("form_residual"),

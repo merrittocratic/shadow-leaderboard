@@ -119,13 +119,43 @@ skill_priors_latest <- player_rounds_hist |>
   group_by(dg_id) |>
   filter(year == max(year)) |>
   summarise(
-    player_skill_prior = first(na.omit(player_skill_prior)),
-    sg_ott_prior       = first(na.omit(sg_ott_prior)),
-    sg_app_prior       = first(na.omit(sg_app_prior)),
-    sg_arg_prior       = first(na.omit(sg_arg_prior)),
-    sg_putt_prior      = first(na.omit(sg_putt_prior)),
+    player_skill_prior       = first(na.omit(player_skill_prior)),
+    player_skill_prior_decay = first(na.omit(player_skill_prior_decay)),
+    n_prior_rounds           = first(na.omit(n_prior_rounds)),
+    sg_ott_prior             = first(na.omit(sg_ott_prior)),
+    sg_app_prior             = first(na.omit(sg_app_prior)),
+    sg_arg_prior             = first(na.omit(sg_arg_prior)),
+    sg_putt_prior            = first(na.omit(sg_putt_prior)),
     .groups = "drop"
   )
+
+# Course-fit weights for the tournament venue
+TOURNAMENT_COURSE_NUM <- 241L   # Quail Hollow — PGA Championship; update per event
+
+course_weights_df <- readr::read_csv(
+  file.path(here::here(), "config", "course_taxonomy_weighted.csv"),
+  col_types = readr::cols(course_num = readr::col_integer(), .default = readr::col_guess()),
+  show_col_types = FALSE
+) |>
+  filter(course_num == TOURNAMENT_COURSE_NUM) |>
+  select(weight_ott, weight_app, weight_arg, weight_putt)
+
+if (nrow(course_weights_df) == 0) {
+  cli_alert_warning(
+    "course_num {TOURNAMENT_COURSE_NUM} not found in taxonomy — course_fit_score will be imputed"
+  )
+  course_weights_df <- tibble(
+    weight_ott = NA_real_, weight_app = NA_real_,
+    weight_arg = NA_real_, weight_putt = NA_real_
+  )
+}
+cli_alert_info(glue::glue(
+  "Course weights (course_num {TOURNAMENT_COURSE_NUM}): ",
+  "OTT={round(course_weights_df$weight_ott,3)} ",
+  "APP={round(course_weights_df$weight_app,3)} ",
+  "ARG={round(course_weights_df$weight_arg,3)} ",
+  "PUTT={round(course_weights_df$weight_putt,3)}"
+))
 
 rounds_2026 <- rounds_2026 |>
   left_join(skill_priors_latest, by = "dg_id") |>
@@ -135,10 +165,10 @@ rounds_2026 <- rounds_2026 |>
 all_rounds <- bind_rows(
   select(player_rounds_hist, dg_id, event_id, year, event_completed,
          sg_total, player_skill_prior, sg_ott_prior, sg_app_prior,
-         sg_arg_prior, sg_putt_prior),
+         sg_arg_prior, sg_putt_prior, player_skill_prior_decay, n_prior_rounds),
   select(rounds_2026, dg_id, event_id, year, event_completed,
          sg_total, player_skill_prior, sg_ott_prior, sg_app_prior,
-         sg_arg_prior, sg_putt_prior)
+         sg_arg_prior, sg_putt_prior, player_skill_prior_decay, n_prior_rounds)
 )
 
 # ---- Recompute form features through most recent 2026 event ---------------
@@ -214,23 +244,30 @@ score_frame <- field_players |>
   left_join(skill_priors_latest, by = "dg_id") |>
   left_join(pga_form,            by = "dg_id") |>
   mutate(
-    wave      = factor("AM"),       # placeholder; tee times not yet assigned
+    wave      = factor("AM"),
     round_num = 1L,
-    is_major  = TRUE,               # PGA Championship is a major
+    is_major  = TRUE,
     course_id = factor("pga_champ_2026"),
     year      = 2026L,
     player_id = factor(dg_id),
-    sg_r1     = NA_real_,           # no prior rounds pre-tournament; imputed by recipe
+    sg_r1     = NA_real_,
     sg_r2     = NA_real_,
-    sg_r3     = NA_real_
+    sg_r3     = NA_real_,
+    # Course-fit score using tournament venue weights
+    course_fit_score =
+      course_weights_df$weight_ott  * sg_ott_prior  +
+      course_weights_df$weight_app  * sg_app_prior  +
+      course_weights_df$weight_arg  * sg_arg_prior  +
+      course_weights_df$weight_putt * sg_putt_prior
   ) |>
-  # Impute missing priors with training set means
   mutate(across(
-    c(player_skill_prior, sg_ott_prior, sg_app_prior,
-      sg_arg_prior, sg_putt_prior,
+    c(player_skill_prior, player_skill_prior_decay,
+      course_fit_score,
+      sg_ott_prior, sg_app_prior, sg_arg_prior, sg_putt_prior,
       starts_with("form_residual")),
     ~ replace_na(.x, mean(.x, na.rm = TRUE))
-  ))
+  )) |>
+  mutate(n_prior_rounds = replace_na(n_prior_rounds, as.integer(round(mean(n_prior_rounds, na.rm = TRUE)))))
 
 # ---- Score ----------------------------------------------------------------
 
