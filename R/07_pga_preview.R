@@ -293,7 +293,66 @@ ranked_table <- score_frame |>
   ) |>
   mutate(across(where(is.double), ~ round(.x, 3)))
 
-# Save CSV
+# ---- Win probabilities via stacked brms posterior ----------------------------
+
+stack_model_file <- file.path(PATH_OUTPUT, "models", "brms_stack.rds")
+
+if (file.exists(stack_model_file)) {
+  cli_h2("Computing win / top-5 / top-10 probabilities (posterior simulation)")
+
+  brms_stack <- readRDS(stack_model_file)
+
+  score_frame_brms <- score_frame |>
+    mutate(
+      gbdt_pred     = .pred,
+      player_season = factor(paste(dg_id, year))
+    )
+
+  N_DRAWS <- 2000L
+
+  # Simulate 4-round tournament. Each call draws fresh posterior samples so
+  # rounds are conditionally independent — slight overstatement of cross-round
+  # uncertainty, negligible effect on win-probability ranking.
+  tournament_totals <- Reduce("+", lapply(seq_len(4L), function(r) {
+    posterior_predict(
+      brms_stack,
+      newdata          = score_frame_brms,
+      ndraws           = N_DRAWS,
+      allow_new_levels = TRUE
+    )
+  }))  # [N_DRAWS x n_players]
+
+  ranks_mat  <- t(apply(tournament_totals, 1, function(row) rank(-row, ties.method = "random")))
+  win_prob   <- colMeans(ranks_mat == 1L)
+  top5_prob  <- colMeans(ranks_mat <= 5L)
+  top10_prob <- colMeans(ranks_mat <= 10L)
+
+  # Per-round SG credible interval (10th–90th percentile of tournament total / 4)
+  pred_lo <- apply(tournament_totals, 2, quantile, probs = 0.10) / 4
+  pred_hi <- apply(tournament_totals, 2, quantile, probs = 0.90) / 4
+
+  ranked_table <- ranked_table |>
+    left_join(
+      tibble(
+        player_name = score_frame_brms$player_name,
+        win_prob    = round(win_prob,   3),
+        top5_prob   = round(top5_prob,  3),
+        top10_prob  = round(top10_prob, 3),
+        pred_sg_lo  = round(pred_lo,    3),
+        pred_sg_hi  = round(pred_hi,    3)
+      ),
+      by = "player_name"
+    )
+
+  cli_alert_success("Win probabilities computed ({N_DRAWS} tournament simulations)")
+} else {
+  cli_alert_warning(
+    "brms_stack.rds not found — skipping win probabilities. Run 06b_brms_stack.R to enable."
+  )
+}
+
+# ---- Save CSV ----------------------------------------------------------------
+
 out_csv <- file.path(PATH_OUTPUT, "pga_preview_2026.csv")
 write_csv(ranked_table, out_csv)
 cli_alert_success("Saved ranked table to {out_csv}")

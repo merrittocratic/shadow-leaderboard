@@ -314,7 +314,75 @@ ranked_table <- score_frame |>
   ) |>
   mutate(across(where(is.double), ~ round(.x, 3)))
 
-# ---- Save and print -------------------------------------------------------
+# ---- Win probabilities via stacked brms posterior ----------------------------
+
+stack_model_file <- file.path(PATH_OUTPUT, "models", "brms_stack.rds")
+
+if (file.exists(stack_model_file)) {
+  cli_h2("Computing win / top-5 / top-10 probabilities (posterior simulation)")
+
+  brms_stack <- readRDS(stack_model_file)
+
+  # Actual cumulative SG from rounds already played
+  actual_total_sg <- if (completed_round > 0L) {
+    score_frame |>
+      select(all_of(paste0("sg_r", seq_len(completed_round)))) |>
+      rowSums(na.rm = TRUE)
+  } else {
+    rep(0, nrow(score_frame))
+  }
+
+  score_frame_brms <- score_frame |>
+    mutate(
+      gbdt_pred     = .pred,
+      player_season = factor(paste(dg_id, year))
+    )
+
+  N_DRAWS          <- 2000L
+  remaining_rounds <- 4L - completed_round
+
+  # Simulate remaining rounds, then anchor to actual completed-round SG
+  future_sg <- if (remaining_rounds > 0L) {
+    Reduce("+", lapply(seq_len(remaining_rounds), function(r) {
+      posterior_predict(
+        brms_stack,
+        newdata          = score_frame_brms,
+        ndraws           = N_DRAWS,
+        allow_new_levels = TRUE
+      )
+    }))
+  } else {
+    matrix(0, nrow = N_DRAWS, ncol = nrow(score_frame_brms))
+  }
+
+  tournament_totals <- sweep(future_sg, 2, actual_total_sg, "+")
+
+  ranks_mat  <- t(apply(tournament_totals, 1, function(row) rank(-row, ties.method = "random")))
+  win_prob   <- colMeans(ranks_mat == 1L)
+  top5_prob  <- colMeans(ranks_mat <= 5L)
+  top10_prob <- colMeans(ranks_mat <= 10L)
+
+  ranked_table <- ranked_table |>
+    left_join(
+      tibble(
+        player_name = score_frame_brms$player_name,
+        win_prob    = round(win_prob,   3),
+        top5_prob   = round(top5_prob,  3),
+        top10_prob  = round(top10_prob, 3)
+      ),
+      by = "player_name"
+    )
+
+  cli_alert_success(
+    "Win probabilities computed ({N_DRAWS} simulations, {remaining_rounds} rounds remaining)"
+  )
+} else {
+  cli_alert_warning(
+    "brms_stack.rds not found — skipping win probabilities. Run 06b_brms_stack.R to enable."
+  )
+}
+
+# ---- Save and print ----------------------------------------------------------
 
 out_stem <- file.path(PATH_OUTPUT, paste0("live_leaderboard_after_r", completed_round))
 out_csv  <- paste0(out_stem, ".csv")
