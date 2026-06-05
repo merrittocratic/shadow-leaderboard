@@ -1,6 +1,7 @@
 source("R/00_config.R")
 source("R/datagolf_api.R")
 source("R/03_model_spec.R")
+source("R/weather_forecast.R")
 
 # PGA Championship 2026 pre-tournament ranked table.
 # Requires 05_tune.R to have completed first.
@@ -129,32 +130,50 @@ skill_priors_latest <- player_rounds_hist |>
     .groups = "drop"
   )
 
-# Course-fit weights for the tournament venue
-TOURNAMENT_COURSE_NUM <- 241L   # Quail Hollow — PGA Championship; update per event
+# Course-fit weights, weather pull, and eval-harness snapshot — update all three per event
+TOURNAMENT_COURSE_NUM <- 23L                              # DataGolf course_num
+TOURNAMENT_START_DATE <- as.Date("2026-06-04")            # Round 1 date
+TOURNAMENT_SLUG       <- "memorial"                       # snake_case id for eval pipeline filenames
+TOURNAMENT_YEAR       <- as.integer(format(TOURNAMENT_START_DATE, "%Y"))
 
-course_weights_df <- readr::read_csv(
+taxonomy_full <- readr::read_csv(
   file.path(here::here(), "config", "course_taxonomy_weighted.csv"),
   col_types = readr::cols(course_num = readr::col_integer(), .default = readr::col_guess()),
   show_col_types = FALSE
-) |>
-  filter(course_num == TOURNAMENT_COURSE_NUM) |>
-  select(weight_ott, weight_app, weight_arg, weight_putt)
+)
 
-if (nrow(course_weights_df) == 0) {
+course_row <- taxonomy_full |> filter(course_num == TOURNAMENT_COURSE_NUM)
+
+if (nrow(course_row) == 0) {
   cli_alert_warning(
-    "course_num {TOURNAMENT_COURSE_NUM} not found in taxonomy — course_fit_score will be imputed"
+    "course_num {TOURNAMENT_COURSE_NUM} not found in taxonomy — course_fit_score and weather will be imputed"
   )
   course_weights_df <- tibble(
     weight_ott = NA_real_, weight_app = NA_real_,
     weight_arg = NA_real_, weight_putt = NA_real_
   )
+  course_lat <- NA_real_
+  course_lon <- NA_real_
+} else {
+  course_weights_df <- course_row |> select(weight_ott, weight_app, weight_arg, weight_putt)
+  course_lat        <- course_row$lat[[1]]
+  course_lon        <- course_row$lon[[1]]
 }
+
 cli_alert_info(glue::glue(
   "Course weights (course_num {TOURNAMENT_COURSE_NUM}): ",
   "OTT={round(course_weights_df$weight_ott,3)} ",
   "APP={round(course_weights_df$weight_app,3)} ",
   "ARG={round(course_weights_df$weight_arg,3)} ",
   "PUTT={round(course_weights_df$weight_putt,3)}"
+))
+
+cli_h2("Pulling Round 1 weather forecast (lat={round(course_lat,3)}, lon={round(course_lon,3)}, date={TOURNAMENT_START_DATE})")
+r1_weather <- pull_round_weather(course_lat, course_lon, TOURNAMENT_START_DATE)
+cli_alert_info(glue::glue(
+  "R1 forecast: wind {round(r1_weather$wind_speed_tee,1)} mph @ {round(r1_weather$wind_dir_tee,0)}°, ",
+  "temp {round(r1_weather$temp_tee,1)}°F, precip {round(r1_weather$precip_tee,2)} in, ",
+  "precision={r1_weather$weather_precision %||% 'NA'}"
 ))
 
 rounds_2026 <- rounds_2026 |>
@@ -247,7 +266,7 @@ score_frame <- field_players |>
     wave      = factor("AM"),
     round_num = 1L,
     is_major  = TRUE,
-    course_id = factor("pga_champ_2026"),
+    course_id = factor("us_open_2026"),
     year      = 2026L,
     player_id = factor(dg_id),
     sg_r1     = NA_real_,
@@ -258,7 +277,13 @@ score_frame <- field_players |>
       course_weights_df$weight_ott  * sg_ott_prior  +
       course_weights_df$weight_app  * sg_app_prior  +
       course_weights_df$weight_arg  * sg_arg_prior  +
-      course_weights_df$weight_putt * sg_putt_prior
+      course_weights_df$weight_putt * sg_putt_prior,
+    # Tournament-window weather (broadcast to all players for R1)
+    wind_speed_tee    = r1_weather$wind_speed_tee,
+    wind_dir_tee      = r1_weather$wind_dir_tee,
+    temp_tee          = r1_weather$temp_tee,
+    precip_tee        = r1_weather$precip_tee,
+    weather_precision = r1_weather$weather_precision
   ) |>
   mutate(across(
     c(player_skill_prior, player_skill_prior_decay,
@@ -353,9 +378,22 @@ if (file.exists(stack_model_file)) {
 
 # ---- Save CSV ----------------------------------------------------------------
 
-out_csv <- file.path(PATH_OUTPUT, "pga_preview_2026.csv")
+out_csv <- file.path(PATH_OUTPUT, sprintf("%s_preview_%d.csv", TOURNAMENT_SLUG, TOURNAMENT_YEAR))
 write_csv(ranked_table, out_csv)
 cli_alert_success("Saved ranked table to {out_csv}")
+
+# ---- Snapshot for retrospective eval harness ---------------------------------
+# Versioned per event so harness/eval_export.R can find this run later, no
+# matter what TOURNAMENT_SLUG points at next week.
+
+eval_dir <- file.path(PATH_OUTPUT, "eval")
+if (!dir.exists(eval_dir)) dir.create(eval_dir, recursive = TRUE)
+snapshot_file <- file.path(
+  eval_dir,
+  sprintf("predictions_%s_%d_preview.rds", TOURNAMENT_SLUG, TOURNAMENT_YEAR)
+)
+saveRDS(ranked_table, snapshot_file)
+cli_alert_success("Eval snapshot saved to {snapshot_file}")
 
 # Print top 20
 cli_h2("Top 20 — PGA Championship 2026 (model: {toupper(best_model_name)}, ranked by predicted SG total)")

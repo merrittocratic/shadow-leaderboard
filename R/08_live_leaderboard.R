@@ -1,6 +1,7 @@
 source("R/00_config.R")
 source("R/datagolf_api.R")
 source("R/03_model_spec.R")
+source("R/weather_forecast.R")
 
 # Live end-of-round leaderboard for the current PGA Tour event.
 # Re-scores the remaining field for the NEXT round using actual SG from
@@ -223,38 +224,175 @@ form_latest <- event_sg_all |>
   )
 
 # ---- Course-fit score -------------------------------------------------------
-# Detect tournament course_num from the live R1 stats data.
+# Resolve tournament course from live R1 stats. Prefer per-player course_num
+# (forward-compat); fall back to matching the top-level course_name against
+# the taxonomy venue_name. When venue_name has duplicates (e.g. Muirfield
+# Village appears under two course_num values), pick the best-sampled row.
 
 r1_raw     <- dg_live_tournament_stats(round = 1L, force_refresh = FALSE)
 r1_players <- r1_raw[["live_stats"]] %||% r1_raw[["rankings"]] %||%
               r1_raw[["data"]] %||% r1_raw[[1]]
-live_course_num <- if (is.data.frame(r1_players) && "course_num" %in% names(r1_players)) {
+live_course_num  <- if (is.data.frame(r1_players) && "course_num" %in% names(r1_players)) {
   as.integer(r1_players$course_num[1])
 } else NA_integer_
+live_course_name <- r1_raw[["course_name"]] %||% NA_character_
 
-course_weights_df <- readr::read_csv(
+taxonomy_full <- readr::read_csv(
   file.path(here::here(), "config", "course_taxonomy_weighted.csv"),
   col_types = readr::cols(course_num = readr::col_integer(), .default = readr::col_guess()),
   show_col_types = FALSE
-) |>
-  filter(course_num == live_course_num) |>
-  select(weight_ott, weight_app, weight_arg, weight_putt)
+)
 
-if (nrow(course_weights_df) == 0) {
-  cli_alert_warning("course_num {live_course_num} not in taxonomy — course_fit_score will be imputed")
+pick_best_row <- function(rows) {
+  rows |>
+    mutate(.n_for_sort = dplyr::coalesce(n_rounds, 0L)) |>
+    arrange(desc(.n_for_sort)) |>
+    slice(1L) |>
+    select(-.n_for_sort)
+}
+
+course_row <- if (!is.na(live_course_num)) {
+  taxonomy_full |> filter(course_num == live_course_num)
+} else {
+  tibble()
+}
+resolved_via <- if (nrow(course_row) > 0) "course_num" else NA_character_
+
+if (nrow(course_row) == 0 && !is.na(live_course_name)) {
+  course_row <- taxonomy_full |> filter(venue_name == live_course_name)
+  if (nrow(course_row) > 1L) course_row <- pick_best_row(course_row)
+  if (nrow(course_row) > 0)  resolved_via <- "course_name"
+}
+
+if (nrow(course_row) == 0) {
+  cli_alert_warning(glue::glue(
+    "Could not resolve course (course_num={live_course_num}, ",
+    "course_name=\"{live_course_name}\") ",
+    "— course_fit_score and weather will be imputed"
+  ))
   course_weights_df <- tibble(
     weight_ott = NA_real_, weight_app = NA_real_,
     weight_arg = NA_real_, weight_putt = NA_real_
   )
+  course_lat <- NA_real_
+  course_lon <- NA_real_
 } else {
-  cli_alert_info(
-    "Course weights (course_num {live_course_num}): ",
+  course_weights_df <- course_row |> select(weight_ott, weight_app, weight_arg, weight_putt)
+  course_lat        <- course_row$lat[[1]]
+  course_lon        <- course_row$lon[[1]]
+  cli_alert_info(glue::glue(
+    "Course weights (resolved via {resolved_via}: ",
+    "course_num={course_row$course_num[[1]]}, ",
+    "venue=\"{course_row$venue_name[[1]]}\"): ",
     "OTT={round(course_weights_df$weight_ott,3)} ",
     "APP={round(course_weights_df$weight_app,3)} ",
     "ARG={round(course_weights_df$weight_arg,3)} ",
     "PUTT={round(course_weights_df$weight_putt,3)}"
-  )
+  ))
 }
+
+# ---- Pull weather forecast for the next round -----------------------------
+# Default assumes 08 is run the evening after a round completes → next round
+# is tomorrow. Override NEXT_ROUND_DATE if running same-day.
+#
+# Per-player resolution (mirrors training-time precision):
+#   1. hourly  — exact UTC tee-hour from field_tee_times          → "hourly"
+#   2. AM/PM   — local 6–12 / 12–18 aggregates when tee time NA   → "daily_avg"
+#   3. overall — full daytime average as last fallback             → "daily_avg"
+
+NEXT_ROUND_DATE <- Sys.Date()
+
+cli_h2("Pulling Round {next_round} weather (lat={round(course_lat,3)}, lon={round(course_lon,3)}, date={NEXT_ROUND_DATE})")
+hourly_weather <- pull_round_weather_hourly(course_lat, course_lon, NEXT_ROUND_DATE)
+
+course_tz <- if (!is.na(course_lat) && !is.na(course_lon)) {
+  lutz::tz_lookup_coords(course_lat, course_lon, method = "fast")
+} else NA_character_
+cli_alert_info("Course timezone: {course_tz %||% 'NA'}")
+
+# Per-player R{next_round} tee times. Map DG wave (early/late) → AM/PM,
+# deriving from local hour when wave is absent. slice_head guards against
+# duplicated round_num rows in the rare case the API double-lists a player.
+player_teetimes <- field_players |>
+  select(dg_id) |>
+  left_join(
+    as_tibble(field_raw$field) |>
+      mutate(dg_id = as.integer(dg_id)) |>
+      select(dg_id, teetimes) |>
+      tidyr::unnest(teetimes, keep_empty = TRUE) |>
+      filter(is.na(round_num) | round_num == next_round) |>
+      group_by(dg_id) |>
+      slice_head(n = 1L) |>
+      ungroup() |>
+      select(dg_id, teetime, wave),
+    by = "dg_id"
+  ) |>
+  mutate(
+    teetime_local = if (!is.na(course_tz)) {
+      lubridate::ymd_hm(teetime, tz = course_tz, quiet = TRUE)
+    } else as.POSIXct(NA, tz = "UTC"),
+    tee_utc_hour  = lubridate::floor_date(
+      lubridate::with_tz(teetime_local, "UTC"), "hour"
+    ),
+    wave_str      = case_when(
+      wave == "early"                                              ~ "AM",
+      wave == "late"                                               ~ "PM",
+      !is.na(teetime_local) & lubridate::hour(teetime_local) < 12L ~ "AM",
+      !is.na(teetime_local)                                        ~ "PM",
+      TRUE                                                          ~ NA_character_
+    )
+  )
+
+# AM/PM bucket aggregates (local 6–12 and 12–18) and overall fallback.
+bucket_tz <- course_tz %||% "UTC"
+am_window_row <- summarize_weather_window(hourly_weather, bucket_tz, 6:11,  "daily_avg")
+pm_window_row <- summarize_weather_window(hourly_weather, bucket_tz, 12:17, "daily_avg")
+overall_row   <- pull_round_weather(course_lat, course_lon, NEXT_ROUND_DATE)
+
+hourly_lookup <- hourly_weather |>
+  transmute(
+    tee_utc_hour      = time,
+    hourly_wind_speed = wind_speed,
+    hourly_wind_dir   = wind_dir,
+    hourly_temp       = temp,
+    hourly_precip     = precip
+  )
+
+player_weather <- player_teetimes |>
+  left_join(hourly_lookup, by = "tee_utc_hour") |>
+  mutate(
+    bucket_wind_speed = if_else(wave_str == "PM", pm_window_row$wind_speed_tee, am_window_row$wind_speed_tee),
+    bucket_wind_dir   = if_else(wave_str == "PM", pm_window_row$wind_dir_tee,   am_window_row$wind_dir_tee),
+    bucket_temp       = if_else(wave_str == "PM", pm_window_row$temp_tee,       am_window_row$temp_tee),
+    bucket_precip     = if_else(wave_str == "PM", pm_window_row$precip_tee,     am_window_row$precip_tee),
+    wind_speed_tee    = coalesce(hourly_wind_speed, bucket_wind_speed, overall_row$wind_speed_tee),
+    wind_dir_tee      = coalesce(hourly_wind_dir,   bucket_wind_dir,   overall_row$wind_dir_tee),
+    temp_tee          = coalesce(hourly_temp,       bucket_temp,       overall_row$temp_tee),
+    precip_tee        = coalesce(hourly_precip,     bucket_precip,     overall_row$precip_tee),
+    weather_precision = case_when(
+      !is.na(hourly_wind_speed) ~ "hourly",
+      !is.na(bucket_wind_speed) ~ "daily_avg",
+      TRUE                       ~ overall_row$weather_precision %||% NA_character_
+    ),
+    wave = factor(wave_str, levels = c("AM", "PM"))
+  ) |>
+  select(dg_id, wave, wind_speed_tee, wind_dir_tee, temp_tee, precip_tee, weather_precision)
+
+n_hourly <- sum(player_weather$weather_precision == "hourly",    na.rm = TRUE)
+n_bucket <- sum(player_weather$weather_precision == "daily_avg", na.rm = TRUE)
+n_other  <- nrow(player_weather) - n_hourly - n_bucket
+cli_alert_info(glue::glue(
+  "R{next_round} per-player weather: {n_hourly} hourly / {n_bucket} AM-PM bucket / ",
+  "{n_other} fallback"
+))
+cli_alert_info(glue::glue(
+  "AM bucket: wind {round(am_window_row$wind_speed_tee,1)} mph @ {round(am_window_row$wind_dir_tee,0)}°, ",
+  "temp {round(am_window_row$temp_tee,1)}°F, precip {round(am_window_row$precip_tee,2)} in"
+))
+cli_alert_info(glue::glue(
+  "PM bucket: wind {round(pm_window_row$wind_speed_tee,1)} mph @ {round(pm_window_row$wind_dir_tee,0)}°, ",
+  "temp {round(pm_window_row$temp_tee,1)}°F, precip {round(pm_window_row$precip_tee,2)} in"
+))
 
 # ---- Assemble scoring frame -----------------------------------------------
 
@@ -262,8 +400,8 @@ score_frame <- field_players |>
   left_join(skill_priors_latest, by = "dg_id") |>
   left_join(form_latest,         by = "dg_id") |>
   left_join(live_sg,             by = "dg_id") |>
+  left_join(player_weather,      by = "dg_id") |>
   mutate(
-    wave      = factor("AM"),
     round_num = next_round,
     is_major  = TRUE,
     course_id = factor(paste0("live_", format(Sys.Date(), "%Y"))),

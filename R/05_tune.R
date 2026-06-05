@@ -17,12 +17,18 @@ cli_h1("Week 3 tuning -- XGBoost and LightGBM")
 
 player_rounds_base <- readRDS(file.path(PATH_DATA, "02_player_rounds.rds"))
 form_features      <- readRDS(file.path(PATH_DATA, "02b_form_features.rds"))
+weather_features   <- readRDS(file.path(PATH_DATA, "02d_weather_features.rds"))
 
-player_rounds <- left_join(
-  player_rounds_base,
-  select(form_features, -event_completed),
-  by = c("dg_id", "event_id", "year")
-)
+player_rounds <- player_rounds_base |>
+  left_join(
+    select(form_features, -event_completed),
+    by = c("dg_id", "event_id", "year")
+  ) |>
+  left_join(
+    select(weather_features, dg_id, event_id, year, round_num,
+           wind_speed_tee, wind_dir_tee, temp_tee, precip_tee, weather_precision),
+    by = c("dg_id", "event_id", "year", "round_num")
+  )
 
 # Exclude held-out validation events
 holdout_ids <- player_rounds |>
