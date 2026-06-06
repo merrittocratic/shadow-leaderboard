@@ -167,6 +167,42 @@ def _detect_round_complete(live_data: dict) -> tuple[bool, int]:
     return pct_finished >= 0.90, round_num
 
 
+def _field_fingerprint(live_data: dict) -> str:
+    """Hash of current SG totals + thru values — changes when play resumes."""
+    players = (live_data.get("live_stats") or live_data.get("rankings") or
+               live_data.get("data") or [])
+    key = "|".join(
+        f"{p.get('player_name','')},{p.get('sg_total','')},{p.get('thru','')}"
+        for p in sorted(players, key=lambda x: x.get("player_name", ""))
+    )
+    return hashlib.md5(key.encode()).hexdigest()
+
+
+def _is_play_suspended(state: dict, live_data: dict) -> bool:
+    """
+    Return True if live data looks frozen (play suspended).
+    Two consecutive identical field fingerprints = likely suspended.
+    Resets automatically when data changes (play resumes).
+    """
+    fp = _field_fingerprint(live_data)
+    history: list = state.setdefault("field_fingerprint_history", [])
+    history.append(fp)
+    if len(history) > 2:
+        history.pop(0)
+    state["field_fingerprint_history"] = history
+    if len(history) < 2:
+        return False
+    suspended = history[0] == history[1]
+    if suspended:
+        log.info("Field fingerprint unchanged — play likely suspended, skipping alert eval")
+    elif state.get("_was_suspended") and not suspended:
+        log.info("Field fingerprint changed — play has resumed")
+        if _bot_module:
+            _bot_module.send_push(f"⛈️ Play has resumed at *{state.get('event_name', 'the tournament')}*!")
+    state["_was_suspended"] = suspended
+    return suspended
+
+
 # ---------------------------------------------------------------------------
 # R subprocess fire
 # ---------------------------------------------------------------------------
@@ -500,7 +536,11 @@ def _tick_in_round(now: float) -> None:
         _log_event("transition", to="between_rounds", completed_round=round_num)
         return
 
-    # Not complete — run heater/crasher evaluation
+    # Not complete — check for suspension before running alert eval
+    if _is_play_suspended(_state, live):
+        _save_state(_state)
+        return
+
     if _bot_module:
         evaluate_push_alerts(_state, _bot_module, dry_run=_dry_run)
     _save_state(_state)
