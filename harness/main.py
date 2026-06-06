@@ -1,9 +1,10 @@
 """
 main.py — Earnest's golf brain entry point.
 
-Threads two concurrent loops:
-  1. telegram_bot.poll()  — long-polls Telegram, handles Steve's queries
-  2. scheduler.run()      — 15-min ticks of the tournament state machine
+Runs the tournament state machine (scheduler.run). Outbound Telegram
+push alerts use send_push() via the Bot API. Inbound golf queries from
+Steve are handled by OpenClaw → Earnest directly (no separate poll loop
+needed — two pollers on the same bot token causes a 409 conflict).
 
 Secrets injected via scripts/with-secrets.sh before exec.
 Logs: ~/Library/Logs/earnest-golf.{out,err}.log + data/logs/earnest.jsonl
@@ -69,23 +70,14 @@ def main() -> None:
 
     log.info("Earnest golf brain starting up (dry_run=%s)", args.dry_run)
 
-    # Thread 1: scheduler state machine (daemon — exits when main exits)
-    sched_thread = threading.Thread(
-        target=scheduler.run,
-        kwargs={"interval_minutes": 15},
-        name="scheduler",
-        daemon=True,
-    )
-    sched_thread.start()
-    log.info("Scheduler thread started")
-
-    # Thread 2: Telegram long poll (main thread blocks here)
-    log.info("Starting Telegram long poll...")
+    # Run scheduler on main thread (blocks until KeyboardInterrupt or SIGTERM)
+    # Inbound Telegram queries are handled by OpenClaw → Earnest session directly.
+    # This process only handles outbound push alerts + R subprocess orchestration.
+    log.info("Starting scheduler (interval=15 min)...")
     try:
-        telegram_bot.poll(feedback_log=feedback_log)
+        scheduler.run(interval_minutes=15)
     except KeyboardInterrupt:
         log.info("Shutting down")
-        telegram_bot.stop()
         scheduler.stop()
 
 
