@@ -137,6 +137,9 @@ def _get_dg_live() -> dict:
         log.warning("DG live fetch failed: %s", e)
         return {}
 
+# Alias used by _detect_active_tournament
+_dg_live = _get_dg_live
+
 
 def _detect_round_complete(live_data: dict) -> tuple[bool, int]:
     """Return (round_is_complete, completed_round_number)."""
@@ -318,11 +321,60 @@ _bot_module = None
 _dry_run: bool = False
 
 
+def _detect_active_tournament() -> dict | None:
+    """
+    Check if a tournament is currently in progress by querying DG live.
+    Returns a partial state dict if one is found, else None.
+    """
+    try:
+        live = _dg_live()
+        players = (live.get("live_stats") or live.get("rankings") or
+                   live.get("data") or [])
+        if not players:
+            return None
+        # Any players with thru > 0 means a round is in progress or just finished
+        active = any(
+            str(p.get("thru", "0")).strip() not in ("0", "", "None")
+            for p in players[:10]
+        )
+        if not active:
+            return None
+        event_name = live.get("event_name", "Unknown Event")
+        event_slug = live.get("event_id", "").replace(" ", "_").lower() or "unknown"
+        event_year = int(live.get("calendar_year", datetime.now().year))
+        # Infer completed rounds from existing artifacts
+        completed = 0
+        for r in (3, 2, 1):
+            if (REPO_ROOT / "output" / f"live_leaderboard_after_r{r}.rds").exists() or \
+               (REPO_ROOT / "output" / f"live_leaderboard_after_r{r}.csv").exists():
+                completed = r
+                break
+        log.info("Active tournament detected: %s (completed rounds: %d)", event_name, completed)
+        return {
+            "event_name":       event_name,
+            "event_slug":       event_slug,
+            "event_year":       event_year,
+            "completed_rounds": completed,
+            "r07_fired":        True,
+        }
+    except Exception as e:
+        log.warning("Active tournament detection failed: %s", e)
+        return None
+
+
 def init(bot_module, dry_run: bool = False) -> None:
     global _state, _bot_module, _dry_run
     _bot_module = bot_module
     _dry_run    = dry_run
     _state      = _load_state()
+    # If we're in off_week but a tournament is actually running, recover into in_round
+    if _state["mode"] == "off_week":
+        detected = _detect_active_tournament()
+        if detected:
+            _state.update(detected)
+            _state["mode"] = "in_round"
+            _save_state(_state)
+            _log_event("startup_recovery", to="in_round", **detected)
     _log_event("scheduler_init", mode=_state["mode"])
 
 
