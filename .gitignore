@@ -40,3 +40,13 @@ Thumbs.db
 # Environment / secrets — never commit
 .env
 .Renviron
+
+# Python venv and cache
+harness/.venv/
+harness/__pycache__/
+**/__pycache__/
+*.pyc
+
+# Runtime state and logs (generated)
+data/cache/earnest_state.json
+data/logs/

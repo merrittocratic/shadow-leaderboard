@@ -1,0 +1,56 @@
+# earnest_push_rules.yaml — Push notification thresholds for Earnest
+# Edit this file to retune thresholds after each event's shakedown review.
+# No code change required.
+
+# ---------------------------------------------------------------------------
+# Heater thresholds (players running above expectations)
+# ---------------------------------------------------------------------------
+heater:
+  percentile_gate: 0.95          # P95 of predicted SG distribution
+  min_holes_played: 9            # minimum thru to qualify
+  per_round_cap: 3               # max heater alerts per round
+  scheffler_clause_percentile: 0.98  # raise gate for pre-round top-5 predicted players
+
+# ---------------------------------------------------------------------------
+# Crasher thresholds (leaderboard players falling apart)
+# ---------------------------------------------------------------------------
+crasher:
+  percentile_gate: 0.05          # P5 of predicted SG distribution
+  min_holes_played: 9
+  max_position: 30               # only flag players in top 30 positions
+  per_round_cap: 2               # max crasher alerts per round
+
+# ---------------------------------------------------------------------------
+# Global cooldown (heater or crasher combined)
+# ---------------------------------------------------------------------------
+global_cooldown_minutes: 90      # minimum minutes between any push alert
+
+# ---------------------------------------------------------------------------
+# Equity weighting
+# ---------------------------------------------------------------------------
+# Alerts ranked by: predicted_win_prob × percentile_excess
+# This naturally filters longshot heaters below high-equity names.
+
+# ---------------------------------------------------------------------------
+# Shakedown mode (US Open 2026 only)
+# ---------------------------------------------------------------------------
+shakedown_mode: true             # adds 👍/👎/🔇 inline buttons to every alert
+feedback_log: data/logs/earnest_alert_feedback.jsonl
+
+# ---------------------------------------------------------------------------
+# Alert templates (Earnest voice — two-sentence ceiling)
+# ---------------------------------------------------------------------------
+# {player}    → player name (Last, First format from DG)
+# {sg_value}  → current in-round SG (e.g. "+4.1")
+# {percentile_pct} → rounded percentile (e.g. "96th")
+# {win_prob_pct}   → pre-round win probability as percent (e.g. "4%")
+# {top10_prob_pct} → pre-round top-10 probability as percent (e.g. "22%")
+# {thru}      → holes played (e.g. "13")
+
+heater_template: >
+  {player} is {sg_value} SG through {thru} — {percentile_pct} percentile per
+  our model. Pre-round win prob was {win_prob_pct}; top-10 was {top10_prob_pct}.
+
+crasher_template: >
+  {player} is {sg_value} SG below expectation through {thru} — {percentile_pct}
+  percentile per our model. Pre-round win prob was {win_prob_pct}. Stuff happens.
