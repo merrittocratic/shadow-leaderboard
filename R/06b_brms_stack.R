@@ -132,24 +132,25 @@ cli_alert_info(
 )
 
 # ---- brms stacked formula + priors -------------------------------------------
-# Prior on gbdt_pred: centered at 1.0 — if the GBDT is well-calibrated the
-# coefficient should be near-unit, not arbitrary.  SD=0.3 is permissive enough
-# to let the data move it but tight enough to regularize against overfitting the
-# second stage.
-# Remaining random effects absorb player / season / venue residual variance that
-# the GBDT missed.
+# Single random effect on player_id only. Diagnostic
+# (diagnose_stack_calibration.R) showed:
+#   - naive OLS slope of sg_residual ~ gbdt_pred is 1.05 (population-calibrated)
+#   - (1|player_season) and (1|course_id) pulled the slope down to ~0.50, but
+#     both are ALWAYS new levels in live scoring (allow_new_levels samples them
+#     from N(0, sd) → contribute zero to posterior mean, only noise to spread).
+#     Net effect: training estimate was suppressed without production benefit.
+# Keeping (1|player_id) — captures player-level heterogeneity for known players,
+# shrinks new players toward the population intercept.
+# Prior on gbdt_pred re-centered at 0.8 (within-player slope from lme4 ablation).
 
 brms_formula_stack <- bf(
-  sg_residual ~ gbdt_pred +
-    (1 | player_id) +
-    (1 | player_season) +
-    (1 | course_id)
+  sg_residual ~ gbdt_pred + (1 | player_id)
 )
 
 brms_priors_stack <- c(
-  prior(normal(1, 0.3),   class = b,         coef = gbdt_pred),
+  prior(normal(0.8, 0.2), class = b,          coef = gbdt_pred),
   prior(normal(0, 0.5),   class = Intercept),
-  prior(exponential(1),   class = sd),
+  prior(normal(0, 0.5),   class = sd,         group = player_id),
   prior(exponential(1),   class = sigma)
 )
 
