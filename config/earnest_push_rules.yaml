@@ -6,9 +6,9 @@
 # Heater thresholds (players running above expectations)
 # ---------------------------------------------------------------------------
 heater:
-  percentile_gate: 0.95          # P95 of predicted SG distribution
+  percentile_gate: 0.90          # P90 of predicted SG distribution
   min_holes_played: 9            # minimum thru to qualify
-  per_round_cap: 3               # max heater alerts per round
+  per_round_cap: 5               # max heater alerts per round
   scheffler_clause_percentile: 0.98  # raise gate for pre-round top-5 predicted players
 
 # ---------------------------------------------------------------------------
@@ -23,7 +23,7 @@ crasher:
 # ---------------------------------------------------------------------------
 # Global cooldown (heater or crasher combined)
 # ---------------------------------------------------------------------------
-global_cooldown_minutes: 90      # minimum minutes between any push alert
+global_cooldown_minutes: 45      # minimum minutes between any push alert
 
 # ---------------------------------------------------------------------------
 # Equity weighting

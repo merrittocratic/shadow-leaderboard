@@ -554,6 +554,11 @@ def _tick_between_rounds(now: float) -> None:
         _log_event("transition", to="post_event")
         return
 
+    # Allow manual pause of R/08 retries (e.g. while data files are being synced)
+    if _state.get("r08_paused"):
+        log.info("R/08 paused (r08_paused=true in state) — skipping retry for round %d", completed)
+        return
+
     # Fire R/08
     success = _fire_r("R/08_live_leaderboard.R", str(completed), dry_run=_dry_run)
     if success:
