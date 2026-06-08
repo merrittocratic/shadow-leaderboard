@@ -80,9 +80,15 @@ pull_round_sg <- function(r) {
     cli_abort("Unexpected response structure from live-tournament-stats (round {r}).")
   }
   as_tibble(players) |>
-    select(dg_id, sg_total) |>
+    select(dg_id, sg_total, sg_ott, sg_app, sg_arg, sg_putt) |>
     mutate(dg_id = as.integer(dg_id)) |>
-    rename(!!paste0("sg_r", r) := sg_total)
+    rename(
+      !!paste0("sg_r",     r) := sg_total,
+      !!paste0("sg_ott_r", r) := sg_ott,
+      !!paste0("sg_app_r", r) := sg_app,
+      !!paste0("sg_arg_r", r) := sg_arg,
+      !!paste0("sg_putt_r",r) := sg_putt
+    )
 }
 
 if (completed_round == 0L) {
@@ -186,10 +192,10 @@ rounds_ytd <- if (length(data_ytd) > 0) {
 # Stack historical + YTD for form computation
 all_rounds <- bind_rows(
   select(player_rounds_hist, dg_id, event_id, year, event_completed,
-         sg_total, player_skill_prior),
+         sg_total, sg_ott, sg_app, sg_arg, sg_putt, player_skill_prior),
   if (nrow(rounds_ytd) > 0)
     select(rounds_ytd, dg_id, event_id, year, event_completed,
-           sg_total, player_skill_prior)
+           sg_total, sg_ott, sg_app, sg_arg, sg_putt, player_skill_prior)
 )
 
 # Recompute form features through the most recent completed event
@@ -201,7 +207,11 @@ all_rounds <- bind_rows(
 
 event_sg_all <- all_rounds |>
   group_by(dg_id, event_id, year, event_completed) |>
-  summarise(event_sg_mean = mean(sg_total, na.rm = TRUE),
+  summarise(event_sg_mean   = mean(sg_total, na.rm = TRUE),
+            event_ott_mean  = mean(sg_ott,   na.rm = TRUE),
+            event_app_mean  = mean(sg_app,   na.rm = TRUE),
+            event_arg_mean  = mean(sg_arg,   na.rm = TRUE),
+            event_putt_mean = mean(sg_putt,  na.rm = TRUE),
             player_skill_prior = first(na.omit(player_skill_prior)),
             .groups = "drop") |>
   mutate(event_residual = event_sg_mean - player_skill_prior) |>
@@ -219,6 +229,10 @@ form_latest <- event_sg_all |>
     form_residual_slope_12= { x <- tail(event_residual[!is.na(event_residual)], 12); .slope(x) },
     form_residual_mean_16 = { x <- tail(event_residual[!is.na(event_residual)], 16); if (!length(x)) NA_real_ else mean(x) },
     form_residual_slope_16= { x <- tail(event_residual[!is.na(event_residual)], 16); .slope(x) },
+    form_ott_mean_8  = { x <- tail(event_ott_mean[!is.na(event_ott_mean)],   8); if (!length(x)) NA_real_ else mean(x) },
+    form_app_mean_8  = { x <- tail(event_app_mean[!is.na(event_app_mean)],   8); if (!length(x)) NA_real_ else mean(x) },
+    form_arg_mean_8  = { x <- tail(event_arg_mean[!is.na(event_arg_mean)],   8); if (!length(x)) NA_real_ else mean(x) },
+    form_putt_mean_8 = { x <- tail(event_putt_mean[!is.na(event_putt_mean)], 8); if (!length(x)) NA_real_ else mean(x) },
     n_events_available    = sum(!is.na(event_residual)),
     .groups = "drop"
   )
@@ -419,12 +433,20 @@ score_frame <- field_players |>
       sg_ott_prior, sg_app_prior,
       sg_arg_prior, sg_putt_prior,
       starts_with("form_residual"),
-      starts_with("sg_r")),
+      starts_with("form_ott_"), starts_with("form_app_"),
+      starts_with("form_arg_"), starts_with("form_putt_"),
+      starts_with("sg_r"),
+      starts_with("sg_ott_r"), starts_with("sg_app_r"),
+      starts_with("sg_arg_r"), starts_with("sg_putt_r")),
     ~ replace_na(.x, mean(.x, na.rm = TRUE))
   ))
 
-# Ensure sg_r columns exist even if only r1 was played
-for (col in c("sg_r1", "sg_r2", "sg_r3")) {
+# Ensure sg_r and component round columns exist even if only r1 was played
+for (col in c("sg_r1", "sg_r2", "sg_r3",
+              "sg_ott_r1", "sg_ott_r2", "sg_ott_r3",
+              "sg_app_r1", "sg_app_r2", "sg_app_r3",
+              "sg_arg_r1", "sg_arg_r2", "sg_arg_r3",
+              "sg_putt_r1", "sg_putt_r2", "sg_putt_r3")) {
   if (!col %in% names(score_frame)) score_frame[[col]] <- NA_real_
 }
 

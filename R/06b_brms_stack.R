@@ -105,7 +105,13 @@ if (file.exists(oof_cache)) {
   )
 
   oof_df <- collect_predictions(oof_res) |>
-    select(.row, gbdt_pred = .pred)
+    mutate(
+      dg_id     = train_data$dg_id[.row],
+      event_id  = train_data$event_id[.row],
+      year      = train_data$year[.row],
+      round_num = train_data$round_num[.row]
+    ) |>
+    select(dg_id, event_id, year, round_num, gbdt_pred = .pred)
 
   saveRDS(oof_df, oof_cache)
   cli_alert_success("OOF predictions cached to {oof_cache}")
@@ -118,13 +124,13 @@ cli_alert_info("OOF predictions: {scales::comma(nrow(oof_df))} rows")
 # inner_join drops pre-2019 training rows; that's correct for stacking.
 
 stack_train <- train_data |>
-  mutate(.row = row_number()) |>
-  inner_join(oof_df, by = ".row") |>
+  inner_join(oof_df, by = c("dg_id", "event_id", "year", "round_num")) |>
   mutate(
     player_id     = factor(dg_id),
     player_season = factor(paste(dg_id, year)),
     course_id     = factor(course_num)
-  )
+  ) |> 
+  distinct(dg_id, event_id, year, round_num, .keep_all = TRUE)
 
 cli_alert_info(
   "Stack training frame: {scales::comma(nrow(stack_train))} rows ",

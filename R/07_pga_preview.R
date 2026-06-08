@@ -130,23 +130,32 @@ skill_priors_latest <- player_rounds_hist |>
     .groups = "drop"
   )
 
-# Course-fit weights, weather pull, and eval-harness snapshot — update all three per event
-TOURNAMENT_COURSE_NUM <- 23L                              # DataGolf course_num
-TOURNAMENT_START_DATE <- as.Date("2026-06-04")            # Round 1 date
-TOURNAMENT_SLUG       <- "memorial"                       # snake_case id for eval pipeline filenames
-TOURNAMENT_YEAR       <- as.integer(format(TOURNAMENT_START_DATE, "%Y"))
-
+# Course-fit weights, weather pull, and eval-harness snapshot — all derived from field_raw
 taxonomy_full <- readr::read_csv(
   file.path(here::here(), "config", "course_taxonomy_weighted.csv"),
   col_types = readr::cols(course_num = readr::col_integer(), .default = readr::col_guess()),
   show_col_types = FALSE
 )
 
-course_row <- taxonomy_full |> filter(course_num == TOURNAMENT_COURSE_NUM)
+TOURNAMENT_START_DATE <- as.Date(field_raw$date_start)
+TOURNAMENT_YEAR       <- as.integer(format(TOURNAMENT_START_DATE, "%Y"))
+TOURNAMENT_SLUG       <- gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(field_raw$event_name)))
+TOURNAMENT_IS_MAJOR   <- field_raw$event_name %in% c(
+  "Masters Tournament", "U.S. Open", "The Open Championship", "PGA Championship"
+)
+
+course_row <- taxonomy_full |> filter(venue_name == field_raw$course_name)
+if (nrow(course_row) == 0) {
+  TOURNAMENT_COURSE_NUM <- NA_integer_
+} else {
+  TOURNAMENT_COURSE_NUM <- course_row$course_num[[1]]
+}
+
+cli_alert_info("Derived slug: {TOURNAMENT_SLUG} | course_num: {TOURNAMENT_COURSE_NUM %||% 'NA (will impute)'}")
 
 if (nrow(course_row) == 0) {
   cli_alert_warning(
-    "course_num {TOURNAMENT_COURSE_NUM} not found in taxonomy — course_fit_score and weather will be imputed"
+    "Course '{field_raw$course_name}' not in taxonomy — course_fit_score and weather will be imputed"
   )
   course_weights_df <- tibble(
     weight_ott = NA_real_, weight_app = NA_real_,
@@ -158,6 +167,25 @@ if (nrow(course_row) == 0) {
   course_weights_df <- course_row |> select(weight_ott, weight_app, weight_arg, weight_putt)
   course_lat        <- course_row$lat[[1]]
   course_lon        <- course_row$lon[[1]]
+}
+
+# ---- Cache DG model predictions + Vegas implied odds ----------------------
+# Day-keyed on the DataGolf side — must be captured now or the window is gone.
+dg_preds_raw <- tryCatch(
+  dg_model_predictions(tour = "pga", odds_format = "percent"),
+  error = function(e) {
+    cli_alert_warning("Could not fetch DG model predictions: {conditionMessage(e)}")
+    NULL
+  }
+)
+if (!is.null(dg_preds_raw)) {
+  dg_snap_path <- file.path(
+    PATH_OUTPUT, "eval",
+    sprintf("dg_predictions_%s_%d.rds", TOURNAMENT_SLUG, TOURNAMENT_YEAR)
+  )
+  if (!dir.exists(dirname(dg_snap_path))) dir.create(dirname(dg_snap_path), recursive = TRUE)
+  saveRDS(dg_preds_raw, dg_snap_path)
+  cli_alert_success("DG predictions snapshot saved to {dg_snap_path}")
 }
 
 cli_alert_info(glue::glue(
@@ -183,10 +211,12 @@ rounds_2026 <- rounds_2026 |>
 # Stack historical + 2026 for form feature computation
 all_rounds <- bind_rows(
   select(player_rounds_hist, dg_id, event_id, year, event_completed,
-         sg_total, player_skill_prior, sg_ott_prior, sg_app_prior,
+         sg_total, sg_ott, sg_app, sg_arg, sg_putt,
+         player_skill_prior, sg_ott_prior, sg_app_prior,
          sg_arg_prior, sg_putt_prior, player_skill_prior_decay, n_prior_rounds),
   select(rounds_2026, dg_id, event_id, year, event_completed,
-         sg_total, player_skill_prior, sg_ott_prior, sg_app_prior,
+         sg_total, sg_ott, sg_app, sg_arg, sg_putt,
+         player_skill_prior, sg_ott_prior, sg_app_prior,
          sg_arg_prior, sg_putt_prior, player_skill_prior_decay, n_prior_rounds)
 )
 
@@ -206,6 +236,10 @@ event_sg_all <- all_rounds |>
   group_by(dg_id, event_id, year, event_completed) |>
   summarise(
     event_sg_mean      = mean(sg_total, na.rm = TRUE),
+    event_ott_mean     = mean(sg_ott,   na.rm = TRUE),
+    event_app_mean     = mean(sg_app,   na.rm = TRUE),
+    event_arg_mean     = mean(sg_arg,   na.rm = TRUE),
+    event_putt_mean    = mean(sg_putt,  na.rm = TRUE),
     player_skill_prior = first(na.omit(player_skill_prior)),
     .groups            = "drop"
   ) |>
@@ -252,6 +286,22 @@ pga_form <- event_sg_all |>
       .slope(x)
     },
     n_events_available = sum(!is.na(event_residual)),
+    form_ott_mean_8 = {
+      x <- tail(event_ott_mean[!is.na(event_ott_mean)], 8)
+      if (length(x) == 0) NA_real_ else mean(x)
+    },
+    form_app_mean_8 = {
+      x <- tail(event_app_mean[!is.na(event_app_mean)], 8)
+      if (length(x) == 0) NA_real_ else mean(x)
+    },
+    form_arg_mean_8 = {
+      x <- tail(event_arg_mean[!is.na(event_arg_mean)], 8)
+      if (length(x) == 0) NA_real_ else mean(x)
+    },
+    form_putt_mean_8 = {
+      x <- tail(event_putt_mean[!is.na(event_putt_mean)], 8)
+      if (length(x) == 0) NA_real_ else mean(x)
+    },
     .groups = "drop"
   )
 
@@ -265,13 +315,17 @@ score_frame <- field_players |>
   mutate(
     wave      = factor("AM"),
     round_num = 1L,
-    is_major  = TRUE,
-    course_id = factor("us_open_2026"),
-    year      = 2026L,
+    is_major  = TOURNAMENT_IS_MAJOR,
+    course_id = factor(paste0(TOURNAMENT_SLUG, "_", TOURNAMENT_YEAR)),
+    year      = TOURNAMENT_YEAR,
     player_id = factor(dg_id),
-    sg_r1     = NA_real_,
-    sg_r2     = NA_real_,
-    sg_r3     = NA_real_,
+    sg_r1      = NA_real_,
+    sg_r2      = NA_real_,
+    sg_r3      = NA_real_,
+    sg_ott_r1  = NA_real_, sg_ott_r2  = NA_real_, sg_ott_r3  = NA_real_,
+    sg_app_r1  = NA_real_, sg_app_r2  = NA_real_, sg_app_r3  = NA_real_,
+    sg_arg_r1  = NA_real_, sg_arg_r2  = NA_real_, sg_arg_r3  = NA_real_,
+    sg_putt_r1 = NA_real_, sg_putt_r2 = NA_real_, sg_putt_r3 = NA_real_,
     # Course-fit score using tournament venue weights
     course_fit_score =
       course_weights_df$weight_ott  * sg_ott_prior  +
@@ -289,7 +343,9 @@ score_frame <- field_players |>
     c(player_skill_prior, player_skill_prior_decay,
       course_fit_score,
       sg_ott_prior, sg_app_prior, sg_arg_prior, sg_putt_prior,
-      starts_with("form_residual")),
+      starts_with("form_residual"),
+      starts_with("form_ott_mean"), starts_with("form_app_mean"),
+      starts_with("form_arg_mean"), starts_with("form_putt_mean")),
     ~ replace_na(.x, mean(.x, na.rm = TRUE))
   )) |>
   mutate(n_prior_rounds = replace_na(n_prior_rounds, as.integer(round(mean(n_prior_rounds, na.rm = TRUE)))))
@@ -308,6 +364,7 @@ ranked_table <- score_frame |>
   mutate(rank = row_number()) |>
   select(
     rank,
+    dg_id,
     player_name,
     predicted_sg_total,
     predicted_sg_residual = .pred,

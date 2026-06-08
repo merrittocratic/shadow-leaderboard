@@ -199,8 +199,10 @@ parse_era5_hourly <- function(raw, event_id, year) {
 # Unique event windows with coordinates
 event_windows <- player_rounds |>
   filter(!is.na(lat), !is.na(lon)) |>
-  group_by(event_id, year, lat, lon) |>
+  group_by(event_id, year) |>
   summarise(
+    lat        = first(lat),
+    lon        = first(lon),
     start_date = min(round_date, na.rm = TRUE),
     end_date   = max(round_date, na.rm = TRUE),
     .groups    = "drop"

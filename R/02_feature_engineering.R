@@ -28,11 +28,17 @@ flatten_event <- function(event) {
 
   # Pre-build per-player prior-round SG lookup (rounds 1-3 only; sg_r4 is
   # never a predictor since there is no round 5 to predict).
+  # Includes total SG (sg_r1..3) and per-component SG (sg_ott_r1..3, etc.).
   sg_lookup <- player_info |> select(dg_id)
   for (i in 1:3) {
     rd <- if (i <= length(round_cols)) scores[[round_cols[[i]]]] else NULL
-    sg_lookup[[paste0("sg_r", i)]] <- if (is.data.frame(rd)) rd$sg_total else NA_real_
+    sg_lookup[[paste0("sg_r",     i)]] <- if (is.data.frame(rd)) rd$sg_total else NA_real_
+    sg_lookup[[paste0("sg_ott_r", i)]] <- if (is.data.frame(rd)) rd$sg_ott   else NA_real_
+    sg_lookup[[paste0("sg_app_r", i)]] <- if (is.data.frame(rd)) rd$sg_app   else NA_real_
+    sg_lookup[[paste0("sg_arg_r", i)]] <- if (is.data.frame(rd)) rd$sg_arg   else NA_real_
+    sg_lookup[[paste0("sg_putt_r",i)]] <- if (is.data.frame(rd)) rd$sg_putt  else NA_real_
   }
+  sg_lookup <- distinct(sg_lookup, dg_id, .keep_all = TRUE)
 
   map_dfr(seq_along(round_cols), function(i) {
     col      <- round_cols[[i]]
@@ -55,7 +61,13 @@ flatten_event <- function(event) {
 
     # Mask current and future rounds — only strictly prior rounds are valid features
     for (j in 1:3) {
-      if (j >= i) out[[paste0("sg_r", j)]] <- NA_real_
+      if (j >= i) {
+        out[[paste0("sg_r",     j)]] <- NA_real_
+        out[[paste0("sg_ott_r", j)]] <- NA_real_
+        out[[paste0("sg_app_r", j)]] <- NA_real_
+        out[[paste0("sg_arg_r", j)]] <- NA_real_
+        out[[paste0("sg_putt_r",j)]] <- NA_real_
+      }
     }
 
     out

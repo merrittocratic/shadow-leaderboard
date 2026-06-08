@@ -31,6 +31,10 @@ event_sg <- player_rounds |>
   group_by(dg_id, event_id, year, event_completed) |>
   summarise(
     event_sg_mean      = mean(sg_total, na.rm = TRUE),
+    event_ott_mean     = mean(sg_ott,   na.rm = TRUE),
+    event_app_mean     = mean(sg_app,   na.rm = TRUE),
+    event_arg_mean     = mean(sg_arg,   na.rm = TRUE),
+    event_putt_mean    = mean(sg_putt,  na.rm = TRUE),
     # player_skill_prior is constant within player-year; take first non-NA
     player_skill_prior = first(na.omit(player_skill_prior)),
     n_rounds           = n(),
@@ -132,6 +136,46 @@ for (N in N_CANDIDATES[-1]) {
     by = c("dg_id", "event_id", "year")
   )
 }
+
+# ---- 4b. Component form features (N=8) ------------------------------------
+# Rolling mean of per-component SG over the last 8 events, strictly prior
+# to the current event. Raw SG (not residualized) — the GBDT handles the
+# interaction with sg_ott_prior / sg_app_prior etc.
+
+cli_h2("Computing component form features (N=8)")
+
+comp_cache_file <- file.path(cache_dir, "form_component_features_N8.rds")
+
+if (file.exists(comp_cache_file)) {
+  cli_alert_info("Component form N=8: cache hit -- loading")
+  comp_form <- readRDS(comp_cache_file)
+} else {
+  cli_alert_info("Component form N=8: computing...")
+
+  comp_form <- event_sg |>
+    group_by(dg_id) |>
+    mutate(
+      form_ott_mean_8  = slide_dbl(event_ott_mean,  ~ mean(.x, na.rm = TRUE),
+                                   .before = 8L, .after = -1L, .complete = FALSE),
+      form_app_mean_8  = slide_dbl(event_app_mean,  ~ mean(.x, na.rm = TRUE),
+                                   .before = 8L, .after = -1L, .complete = FALSE),
+      form_arg_mean_8  = slide_dbl(event_arg_mean,  ~ mean(.x, na.rm = TRUE),
+                                   .before = 8L, .after = -1L, .complete = FALSE),
+      form_putt_mean_8 = slide_dbl(event_putt_mean, ~ mean(.x, na.rm = TRUE),
+                                   .before = 8L, .after = -1L, .complete = FALSE)
+    ) |>
+    ungroup() |>
+    mutate(across(starts_with("form_ott_mean_8") | starts_with("form_app_mean_8") |
+                  starts_with("form_arg_mean_8") | starts_with("form_putt_mean_8"),
+                  ~ if_else(is.nan(.x), NA_real_, .x))) |>
+    select(dg_id, event_id, year,
+           form_ott_mean_8, form_app_mean_8, form_arg_mean_8, form_putt_mean_8)
+
+  saveRDS(comp_form, comp_cache_file)
+  cli_alert_success("Component form N=8: done, cached")
+}
+
+form_features <- left_join(form_features, comp_form, by = c("dg_id", "event_id", "year"))
 
 cli_alert_success(
   "form_features: {nrow(form_features)} rows x {ncol(form_features)} cols"
