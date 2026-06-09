@@ -334,11 +334,13 @@ player_teetimes <- field_players |>
       mutate(dg_id = as.integer(dg_id)) |>
       select(dg_id, teetimes) |>
       tidyr::unnest(teetimes, keep_empty = TRUE) |>
+      (\(df) if ("round_num" %in% names(df)) dplyr::mutate(df, round_num = as.integer(round_num)) else dplyr::mutate(df, round_num = NA_integer_))() |>
       filter(is.na(round_num) | round_num == next_round) |>
       group_by(dg_id) |>
       slice_head(n = 1L) |>
       ungroup() |>
-      select(dg_id, teetime, wave),
+      select(dg_id, any_of(c("teetime", "wave"))) |>
+      (\(df) { if (!"teetime" %in% names(df)) df$teetime <- NA_character_; if (!"wave" %in% names(df)) df$wave <- NA_character_; df })(),
     by = "dg_id"
   ) |>
   mutate(
