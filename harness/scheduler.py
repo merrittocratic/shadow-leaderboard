@@ -22,7 +22,7 @@ import subprocess
 import sys
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,19 +49,22 @@ DG_BASE_URL = "https://feeds.datagolf.com"
 # ---------------------------------------------------------------------------
 
 DEFAULT_STATE: dict = {
-    "mode":                "off_week",
-    "event_name":          None,
-    "event_slug":          None,
-    "event_year":          None,
-    "completed_rounds":    0,
-    "r07_fired":           False,
-    "last_live_check":     0,
-    "last_field_poll":     0,
-    "last_alert_ts":       0,
-    "round_alert_counts":  {},   # {"heater": N, "crasher": N} per round
-    "muted_players":       [],
-    "shakedown_mode":      True,
-    "updated_at":          None,
+    "mode":                    "off_week",
+    "event_name":              None,
+    "event_slug":              None,
+    "event_year":              None,
+    "tournament_start_date":   None,   # "YYYY-MM-DD" — set when event detected
+    "tournament_end_date":     None,   # start + 3 days (Thu-Sun format)
+    "completed_rounds":        0,
+    "r07_fired":               False,
+    "last_live_check":         0,
+    "last_field_poll":         0,
+    "last_alert_ts":           0,
+    "round_alert_counts":      {},     # {"heater": N, "crasher": N} per round
+    "last_r08_fail_notified":  {},     # {str(round): unix ts} — spam guard
+    "muted_players":           [],
+    "shakedown_mode":          True,
+    "updated_at":              None,
 }
 
 
@@ -458,6 +461,9 @@ def _tick_off_week(now: float) -> None:
             _state["event_name"] = ev.get("event_name", "Unknown Event")
             _state["event_slug"] = ev.get("event_id",   "unknown")
             _state["event_year"] = int(ev.get("calendar_year", datetime.now().year))
+            start_dt = _parse_date(start)
+            _state["tournament_start_date"] = start_dt.strftime("%Y-%m-%d")
+            _state["tournament_end_date"]   = (start_dt + timedelta(days=3)).strftime("%Y-%m-%d")
             _save_state(_state)
             _log_event("transition", to="field_pending",
                         event=_state["event_name"], starts_in_days=days_until)
@@ -530,11 +536,20 @@ def _tick_in_round(now: float) -> None:
     is_complete, round_num = _detect_round_complete(live)
 
     if is_complete:
-        _state["mode"]             = "between_rounds"
-        _state["completed_rounds"] = round_num
-        _save_state(_state)
-        _log_event("transition", to="between_rounds", completed_round=round_num)
-        return
+        # Floor guard: DG can return stale/ambiguous round numbers after a
+        # tournament ends. Never allow completed_rounds to regress.
+        floor = _state.get("completed_rounds", 0)
+        if round_num <= floor:
+            log.warning(
+                "Round-complete detection returned round %d but state floor is %d — ignoring",
+                round_num, floor,
+            )
+        else:
+            _state["mode"]             = "between_rounds"
+            _state["completed_rounds"] = round_num
+            _save_state(_state)
+            _log_event("transition", to="between_rounds", completed_round=round_num)
+            return
 
     # Not complete — check for suspension before running alert eval
     if _is_play_suspended(_state, live):
@@ -553,6 +568,33 @@ def _tick_between_rounds(now: float) -> None:
         _save_state(_state)
         _log_event("transition", to="post_event")
         return
+
+    # Date-window guard: only fire R/08 during the tournament window.
+    # Prevents stale post-tournament DG data from triggering spurious runs
+    # on Mon/Tue/Wed after the event ends. Guard is skipped if dates were not
+    # stored (e.g. startup recovery — those sessions are already in-window).
+    start_str = _state.get("tournament_start_date")
+    end_str   = _state.get("tournament_end_date")
+    if start_str and end_str:
+        today      = datetime.now(timezone.utc).date()
+        start_date = _parse_date(start_str).date()
+        end_date   = _parse_date(end_str).date()
+        # Allow 1-day buffer after end for late finishes / slow DG updates
+        if not (start_date <= today <= end_date + timedelta(days=1)):
+            log.warning(
+                "R/08 date-window guard: today %s is outside [%s, %s+1] — "
+                "resetting to off_week to avoid stale-data run",
+                today, start_date, end_date,
+            )
+            for key in ("event_name", "event_slug", "event_year", "r07_fired",
+                        "tournament_start_date", "tournament_end_date",
+                        "last_live_check", "round_alert_counts", "muted_players"):
+                _state[key] = DEFAULT_STATE.get(key)
+            _state["completed_rounds"] = 0
+            _state["mode"] = "off_week"
+            _save_state(_state)
+            _log_event("date_window_guard", reset_to="off_week", today=str(today))
+            return
 
     # Allow manual pause of R/08 retries (e.g. while data files are being synced)
     if _state.get("r08_paused"):
@@ -576,11 +618,17 @@ def _tick_between_rounds(now: float) -> None:
         _log_event("transition", to="in_round", next_round=completed + 1)
     else:
         log.error("R/08 failed for round %d — staying in between_rounds to retry", completed)
-        if _bot_module:
-            _bot_module.send_push(
-                f"⚠️ R/08_live_leaderboard.R failed for Round {completed}. "
-                "Check `data/logs/earnest.jsonl`."
-            )
+        # Rate-limit failure notifications to once per hour per round
+        fail_log     = _state.setdefault("last_r08_fail_notified", {})
+        last_notified = fail_log.get(str(completed), 0)
+        if now - last_notified >= 3600:
+            if _bot_module:
+                _bot_module.send_push(
+                    f"⚠️ R/08_live_leaderboard.R failed for Round {completed}. "
+                    "Check `data/logs/earnest.jsonl`."
+                )
+            fail_log[str(completed)] = now
+            _save_state(_state)
 
 
 def _tick_post_event(now: float) -> None:
