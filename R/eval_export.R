@@ -160,8 +160,55 @@ load_owgr_baseline <- function(tournament, year) {
   tibble(player_id = integer(0), pred_owgr_win_prob = double(0))
 }
 
+# Normalize "Last, First" or "First Last" -> lowercase "first last" for joining
+.normalize_player_name <- function(x) {
+  x <- tolower(trimws(x))
+  x <- ifelse(grepl(",", x), sub("^(.+),\\s*(.+)$", "\\2 \\1", x), x)
+  gsub("[^a-z ]", "", x) |> trimws() |> gsub("\\s+", " ", x = _)
+}
+
 load_vegas_baseline <- function(tournament, year) {
-  tibble(player_id = integer(0), pred_vegas_win_prob = double(0))
+  empty <- tibble(player_id = integer(0), pred_vegas_win_prob = double(0))
+
+  odds_path <- file.path(
+    here(), "output", "eval",
+    sprintf("odds_%s_%d.rds", tournament, year)
+  )
+  if (!file.exists(odds_path)) {
+    cli::cli_alert_warning("No odds snapshot for {tournament} {year} — vegas baseline will be NA")
+    return(empty)
+  }
+
+  preview_path <- file.path(
+    here(), "output",
+    sprintf("%s_preview_%d.csv", tournament, year)
+  )
+  if (!file.exists(preview_path)) {
+    cli::cli_alert_warning("No preview CSV for name->dg_id join — vegas baseline will be NA")
+    return(empty)
+  }
+
+  odds    <- readRDS(odds_path)
+  preview <- readr::read_csv(preview_path, show_col_types = FALSE) |>
+    dplyr::select(dg_id, player_name) |>
+    dplyr::mutate(player_name_norm = .normalize_player_name(player_name))
+
+  joined <- preview |>
+    dplyr::left_join(
+      dplyr::select(odds, player_name_norm, implied_prob_fair),
+      by = "player_name_norm"
+    ) |>
+    dplyr::filter(!is.na(implied_prob_fair))
+
+  n_matched <- nrow(joined)
+  n_total   <- nrow(preview)
+  cli::cli_alert_info("Odds join: {n_matched}/{n_total} players matched by name")
+
+  joined |>
+    dplyr::transmute(
+      player_id           = as.integer(dg_id),
+      pred_vegas_win_prob = as.double(implied_prob_fair)
+    )
 }
 
 get_course_metadata <- function(tournament, year) {

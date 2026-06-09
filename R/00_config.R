@@ -5,8 +5,11 @@ library(here)
 library(cli)
 
 # DataGolf API
-DG_BASE_URL <- "https://feeds.datagolf.com"
-DG_API_KEY  <- Sys.getenv("GOLF_API_KEY")
+DG_BASE_URL  <- "https://feeds.datagolf.com"
+DG_API_KEY   <- Sys.getenv("GOLF_API_KEY")
+
+# The Odds API (Pinnacle sharp line — sourced in odds_api.R)
+ODDS_API_KEY <- Sys.getenv("ODDS_API_KEY")
 
 # Training window
 TRAIN_YEAR_START <- 2010L

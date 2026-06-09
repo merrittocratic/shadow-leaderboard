@@ -1,5 +1,6 @@
 source("R/00_config.R")
 source("R/datagolf_api.R")
+source("R/odds_api.R")
 source("R/03_model_spec.R")
 source("R/weather_forecast.R")
 
@@ -451,6 +452,10 @@ snapshot_file <- file.path(
 )
 saveRDS(ranked_table, snapshot_file)
 cli_alert_success("Eval snapshot saved to {snapshot_file}")
+
+# ---- Odds snapshot (Pinnacle sharp line) ------------------------------------
+# Majors only — returns NULL silently for regular-tour events.
+fetch_odds_snapshot(TOURNAMENT_SLUG, TOURNAMENT_YEAR)
 
 # Print top 20
 cli_h2("Top 20 — PGA Championship 2026 (model: {toupper(best_model_name)}, ranked by predicted SG total)")
