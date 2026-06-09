@@ -389,12 +389,32 @@ def _detect_active_tournament() -> dict | None:
                 completed = r
                 break
         log.info("Active tournament detected: %s (completed rounds: %d)", event_name, completed)
+
+        # Try to get tournament dates from the schedule for the date-window guard.
+        # DG's schedule API returns all season events, so recently completed
+        # events are still present.
+        start_date = end_date = None
+        try:
+            for ev in _get_dg_schedule():
+                if (ev.get("event_id", "") == event_slug or
+                        ev.get("event_name", "") == event_name):
+                    start_str = ev.get("date", ev.get("start_date", ""))
+                    if start_str:
+                        start_dt   = _parse_date(start_str)
+                        start_date = start_dt.strftime("%Y-%m-%d")
+                        end_date   = (start_dt + timedelta(days=3)).strftime("%Y-%m-%d")
+                    break
+        except Exception:
+            pass
+
         return {
-            "event_name":       event_name,
-            "event_slug":       event_slug,
-            "event_year":       event_year,
-            "completed_rounds": completed,
-            "r07_fired":        True,
+            "event_name":            event_name,
+            "event_slug":            event_slug,
+            "event_year":            event_year,
+            "completed_rounds":      completed,
+            "r07_fired":             True,
+            "tournament_start_date": start_date,
+            "tournament_end_date":   end_date,
         }
     except Exception as e:
         log.warning("Active tournament detection failed: %s", e)
@@ -406,9 +426,27 @@ def init(bot_module, dry_run: bool = False) -> None:
     _bot_module = bot_module
     _dry_run    = dry_run
     _state      = _load_state()
-    # If we're in off_week but a tournament is actually running, recover into in_round
+    # If we're in off_week but a tournament is actually running, recover into in_round.
+    # Apply the same date-window guard used in _tick_between_rounds so that stale
+    # post-tournament DG data cannot trigger a recovery on Mon/Tue/Wed.
     if _state["mode"] == "off_week":
         detected = _detect_active_tournament()
+        if detected:
+            start_str = detected.get("tournament_start_date")
+            end_str   = detected.get("tournament_end_date")
+            if start_str and end_str:
+                today      = datetime.now(timezone.utc).date()
+                start_date = _parse_date(start_str).date()
+                end_date   = _parse_date(end_str).date()
+                if not (start_date <= today <= end_date + timedelta(days=1)):
+                    log.warning(
+                        "Startup recovery date-window guard: today %s outside "
+                        "[%s, %s+1] — staying off_week", today, start_date, end_date,
+                    )
+                    _log_event("startup_recovery_blocked",
+                               today=str(today), event=detected.get("event_name"),
+                               window_end=str(end_date))
+                    detected = None
         if detected:
             _state.update(detected)
             _state["mode"] = "in_round"
