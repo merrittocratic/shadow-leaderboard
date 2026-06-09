@@ -21,7 +21,15 @@ cli_h1("LIV round weight calibration")
 
 # ---- 1. Flatten LIV rounds --------------------------------------------------
 
+# Events to exclude from calibration: non-competitive LIV formats
+LIV_EXCLUDE_EVENTS <- c("Promotions Event", "Dallas (Team Final--Stroke Play)",
+                         "Dallas (Team Final-Stroke Play)")
+
 flatten_liv_sg <- function(event) {
+  # Skip non-competitive LIV formats
+  if (any(sapply(LIV_EXCLUDE_EVENTS, function(x) grepl(x, event$event_name, fixed = TRUE)))) {
+    return(NULL)
+  }
   scores     <- event$scores
   round_cols <- intersect(paste0("round_", 1:3), names(scores))
   player_info <- as_tibble(scores[, c("dg_id", "player_name"), drop = FALSE]) |>
@@ -97,10 +105,23 @@ cli_alert_info(
 
 # ---- 4. OLS: pga_sg ~ liv_sg -----------------------------------------------
 
-cal_data <- inner_join(liv_yr, crossover, by = c("dg_id", "year")) |>
-  filter(!is.na(liv_sg_mean), !is.na(pga_sg_mean))
+# Minimum rounds filter: require meaningful sample on both sides.
+# Fringe players (Open qualifiers, one-off invitees) with <10 LIV rounds or
+# <4 PGA rounds add noise without signal — exclude them from the OLS.
+MIN_LIV_ROUNDS <- 10L
+MIN_PGA_ROUNDS <-  4L
 
-cli_alert_info("Calibration rows (matched player-years): {nrow(cal_data)}")
+cal_data <- inner_join(liv_yr, crossover, by = c("dg_id", "year")) |>
+  filter(
+    !is.na(liv_sg_mean), !is.na(pga_sg_mean),
+    n_rounds_liv >= MIN_LIV_ROUNDS,
+    n_rounds_pga >= MIN_PGA_ROUNDS
+  )
+
+cli_alert_info(
+  "Calibration rows after quality filter ",
+  "(>={MIN_LIV_ROUNDS} LIV rounds, >={MIN_PGA_ROUNDS} PGA rounds): {nrow(cal_data)}"
+)
 
 if (nrow(cal_data) < 5) {
   cli_abort(
@@ -142,7 +163,7 @@ cli_h2("Crossover player detail")
 
 player_detail <- cal_data |>
   left_join(
-    pga_rounds |> distinct(dg_id, player_name),
+    pga_rounds |> distinct(dg_id, player_name) |> distinct(dg_id, .keep_all = TRUE),
     by = "dg_id"
   ) |>
   select(player_name, year, liv_sg_mean, n_rounds_liv, pga_sg_mean, n_rounds_pga, events) |>
