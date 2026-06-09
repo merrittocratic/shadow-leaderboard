@@ -164,6 +164,70 @@ year_sg_euro <- euro_rounds |>
     .groups       = "drop"
   )
 
+# ---- 3b. LIV Golf supplement -----------------------------------------------
+# Same approach as the DP World Tour supplement above.
+# LIV rounds (54-hole, 48-player shotgun fields) are discounted to
+# LIV_ROUND_WEIGHT effective PGA rounds before blending into total-SG priors.
+# Weight is calibrated by 02e_liv_weight.R (OLS: pga_sg ~ liv_sg, crossover
+# players). Component priors (sg_ott/app/arg/putt) stay PGA-only.
+#
+# LIV data covers 2022 onward — meaningful for Rahm, Koepka, DeChambeau,
+# DJ, and other major-eligible LIV players whose PGA priors went stale.
+
+liv_weight_file <- file.path(PATH_CONFIG, "liv_round_weight.rds")
+if (file.exists(liv_weight_file)) {
+  LIV_ROUND_WEIGHT <- readRDS(liv_weight_file)
+  cli_alert_info("LIV_ROUND_WEIGHT = {LIV_ROUND_WEIGHT} (loaded from config/liv_round_weight.rds)")
+} else {
+  LIV_ROUND_WEIGHT <- 0.4   # conservative fallback until calibration is run
+  cli_alert_warning(
+    "config/liv_round_weight.rds not found — using fallback LIV_ROUND_WEIGHT = {LIV_ROUND_WEIGHT}. ",
+    "Run 02e_liv_weight.R to calibrate."
+  )
+}
+
+cli_h2("Loading LIV Golf supplement")
+
+flatten_liv_sg <- function(event) {
+  scores     <- event$scores
+  round_cols <- intersect(paste0("round_", 1:3), names(scores))
+  player_info <- as_tibble(scores[, c("dg_id", "player_name"), drop = FALSE]) |>
+    mutate(dg_id = as.integer(dg_id))
+  purrr::map_dfr(seq_along(round_cols), function(i) {
+    rd <- scores[[round_cols[[i]]]]
+    if (!is.data.frame(rd) || !"sg_total" %in% names(rd)) return(NULL)
+    bind_cols(player_info,
+              tibble(sg_total = rd$sg_total, year = event$year)) |>
+      filter(!is.na(sg_total))
+  })
+}
+
+liv_files <- list.files(
+  file.path(PATH_CACHE, "historical_raw"),
+  pattern = "^liv_\\d{4}\\.rds$",
+  full.names = TRUE
+)
+
+if (length(liv_files) > 0) {
+  liv_rounds <- purrr::map_dfr(liv_files, \(f) purrr::map_dfr(readRDS(f), flatten_liv_sg))
+  cli_alert_success(
+    "LIV rounds: {scales::comma(nrow(liv_rounds))} across years ",
+    "{paste(sort(unique(liv_rounds$year)), collapse=', ')}"
+  )
+
+  year_sg_liv <- liv_rounds |>
+    group_by(dg_id, year) |>
+    summarise(
+      sg_total_liv = mean(sg_total, na.rm = TRUE),
+      n_rounds_liv = n(),
+      .groups      = "drop"
+    )
+} else {
+  cli_alert_warning("No LIV cache files found — LIV supplement skipped. Run 01b_pull_liv.R.")
+  year_sg_liv <- tibble(dg_id = integer(0), year = integer(0),
+                        sg_total_liv = double(0), n_rounds_liv = integer(0))
+}
+
 # ---- 4. Player skill priors -----------------------------------------------
 # Year-level expanding mean, leave-current-year-out.
 # For a player's first year the prior is NA — imputed in model recipes.
@@ -236,6 +300,34 @@ year_sg_aug <- year_sg_means |>
   filter(n_rounds_yr > 0L) |>
   select(dg_id, year, sg_total_yr, n_rounds_yr) |>
   arrange(dg_id, year)
+
+# Blend LIV into the (already euro-augmented) year totals.
+# full_join adds LIV-year rows; for LIV players with no PGA/euro data in a
+# given year (rare after 2022) the sg_total_yr falls back to discounted LIV.
+if (nrow(year_sg_liv) > 0) {
+  year_sg_aug <- year_sg_aug |>
+    full_join(year_sg_liv, by = c("dg_id", "year")) |>
+    mutate(
+      n_pga_euro  = coalesce(as.double(n_rounds_yr), 0.0),
+      n_liv_eff   = coalesce(as.double(n_rounds_liv), 0.0) * LIV_ROUND_WEIGHT,
+      sg_total_yr = case_when(
+        !is.na(sg_total_yr) & !is.na(sg_total_liv) ~
+          (sg_total_yr * n_pga_euro + LIV_ROUND_WEIGHT * sg_total_liv * n_rounds_liv) /
+          (n_pga_euro + n_liv_eff),
+        !is.na(sg_total_yr) ~ sg_total_yr,
+        TRUE ~ LIV_ROUND_WEIGHT * sg_total_liv
+      ),
+      n_rounds_yr = as.integer(round(n_pga_euro + n_liv_eff))
+    ) |>
+    filter(n_rounds_yr > 0L) |>
+    select(dg_id, year, sg_total_yr, n_rounds_yr) |>
+    arrange(dg_id, year)
+
+  n_liv_players <- n_distinct(year_sg_liv$dg_id)
+  cli_alert_success(
+    "LIV blend applied: {n_liv_players} players enriched at weight {LIV_ROUND_WEIGHT}"
+  )
+}
 
 # Total-SG priors: static + decay, n_prior_rounds — all from combined data
 total_priors <- year_sg_aug |>
