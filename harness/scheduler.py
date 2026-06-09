@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -392,12 +393,16 @@ def _detect_active_tournament() -> dict | None:
 
         # Try to get tournament dates from the schedule for the date-window guard.
         # DG's schedule API returns all season events, so recently completed
-        # events are still present.
+        # events are still present. Normalize both sides to avoid
+        # case/punctuation mismatches between live and schedule responses.
+        def _norm(s: str) -> str:
+            return re.sub(r"[^a-z0-9]", "", s.lower())
+
         start_date = end_date = None
         try:
             for ev in _get_dg_schedule():
-                if (ev.get("event_id", "") == event_slug or
-                        ev.get("event_name", "") == event_name):
+                if (_norm(ev.get("event_id",   "")) == _norm(event_slug) or
+                        _norm(ev.get("event_name", "")) == _norm(event_name)):
                     start_str = ev.get("date", ev.get("start_date", ""))
                     if start_str:
                         start_dt   = _parse_date(start_str)
@@ -434,7 +439,22 @@ def init(bot_module, dry_run: bool = False) -> None:
         if detected:
             start_str = detected.get("tournament_start_date")
             end_str   = detected.get("tournament_end_date")
-            if start_str and end_str:
+            if not (start_str and end_str):
+                # Fail closed: if we can't confirm the tournament window,
+                # block recovery. Scheduler stays off_week and picks up the
+                # real active event on the next normal poll cycle.
+                log.warning(
+                    "Startup recovery: could not resolve tournament dates for "
+                    "'%s' (slug='%s') — blocking recovery to prevent stale-data "
+                    "run. Will retry on next poll.",
+                    detected.get("event_name"), detected.get("event_slug"),
+                )
+                _log_event("startup_recovery_blocked",
+                           reason="dates_unresolvable",
+                           event=detected.get("event_name"),
+                           slug=detected.get("event_slug"))
+                detected = None
+            else:
                 today      = datetime.now(timezone.utc).date()
                 start_date = _parse_date(start_str).date()
                 end_date   = _parse_date(end_str).date()
@@ -444,6 +464,7 @@ def init(bot_module, dry_run: bool = False) -> None:
                         "[%s, %s+1] — staying off_week", today, start_date, end_date,
                     )
                     _log_event("startup_recovery_blocked",
+                               reason="outside_window",
                                today=str(today), event=detected.get("event_name"),
                                window_end=str(end_date))
                     detected = None
