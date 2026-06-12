@@ -8,7 +8,11 @@
 heater:
   percentile_gate: 0.90          # P90 of predicted SG distribution
   min_holes_played: 9            # minimum thru to qualify
-  per_round_cap: 5               # max heater alerts per round
+  per_round_cap: 5               # R3/R4 post-gate flat cap (also default for unknown rounds)
+  am_cap: 3                      # R1/R2 morning window cap
+  pm_cap: 3                      # R1/R2 afternoon window cap
+  am_cutoff_hour: 13             # ET hour where AM window ends (13 = 1pm ET)
+  weekend_gate_hour: 15          # ET hour where R3/R4 alerts unlock (15 = 3pm ET)
   scheffler_clause_percentile: 0.98  # raise gate for pre-round top-5 predicted players
 
 # ---------------------------------------------------------------------------

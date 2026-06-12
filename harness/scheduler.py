@@ -26,6 +26,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import requests
 import schedule
@@ -62,7 +63,8 @@ DEFAULT_STATE: dict = {
     "last_live_check":         0,
     "last_field_poll":         0,
     "last_alert_ts":           0,
-    "round_alert_counts":      {},     # {"heater": N, "crasher": N} per round
+    "round_alert_counts":      {},     # {round_key: {"heater"|"heater_am"|"heater_pm": N, "crasher": N}}
+    "alerted_players_this_round": {},  # {round_key: [player_names]} — per-player suppress
     "last_r08_fail_notified":  {},     # {str(round): unix ts} — spam guard
     "muted_players":           [],
     "shakedown_mode":          True,
@@ -382,12 +384,45 @@ def _format_alert(template: str, player: str, sg_val: float, percentile: float,
 
 def evaluate_push_alerts(state: dict, bot_module, dry_run: bool = False) -> None:
     """Run the heater/crasher evaluation and fire alerts if thresholds met."""
-    rules  = _load_rules()
-    now    = time.time()
+    rules    = _load_rules()
+    now      = time.time()
     cooldown = rules.get("global_cooldown_minutes", 90) * 60
     if now - state.get("last_alert_ts", 0) < cooldown:
         log.debug("Global cooldown active, skipping push eval")
         return
+
+    heater_rules = rules.get("heater", {})
+    round_num    = state.get("completed_rounds", 1) + 1
+    round_key    = str(round_num)
+
+    # --- Time-window gate (Bug 5) ---
+    now_et  = datetime.now(ZoneInfo("America/New_York"))
+    et_hour = now_et.hour
+
+    weekend_gate_hour = heater_rules.get("weekend_gate_hour", 15)
+    am_cutoff_hour    = heater_rules.get("am_cutoff_hour", 13)
+    am_cap            = heater_rules.get("am_cap", 3)
+    pm_cap            = heater_rules.get("pm_cap", 3)
+
+    is_weekend_round = round_num >= 3
+    if is_weekend_round and et_hour < weekend_gate_hour:
+        log.info(
+            "Weekend gate active (round %d, %02d:xx ET < %02d:00 ET cutoff) — "
+            "holding all alerts",
+            round_num, et_hour, weekend_gate_hour,
+        )
+        return
+
+    # Heater cap bucket: R1/R2 split by AM/PM; R3/R4 flat post-gate
+    if is_weekend_round:
+        heater_bucket = "heater"
+        heater_cap    = heater_rules.get("per_round_cap", 5)
+    elif et_hour < am_cutoff_hour:
+        heater_bucket = "heater_am"
+        heater_cap    = am_cap
+    else:
+        heater_bucket = "heater_pm"
+        heater_cap    = pm_cap
 
     try:
         sys.path.insert(0, str(REPO_ROOT / "harness"))
@@ -396,40 +431,47 @@ def evaluate_push_alerts(state: dict, bot_module, dry_run: bool = False) -> None
             state["event_slug"],
             state["event_year"],
             top_n=5,
-            percentile_gate=rules.get("heater", {}).get("percentile_gate", 0.95),
+            percentile_gate=heater_rules.get("percentile_gate", 0.95),
         )
     except Exception as e:
         log.warning("get_heating_up failed: %s", e)
         return
 
-    heater_rules  = rules.get("heater", {})
     crasher_rules = rules.get("crasher", {})
-    round_num     = state.get("completed_rounds", 1) + 1
-    round_key     = str(round_num)
-    counts        = state.setdefault("round_alert_counts", {}).setdefault(round_key, {"heater": 0, "crasher": 0})
-    shakedown     = rules.get("shakedown_mode", True) and state.get("shakedown_mode", True)
-    muted         = set(state.get("muted_players", []))
-    heater_tmpl   = rules.get("heater_template", "{player} {sg_value} SG thru {thru}, {percentile_pct} percentile. Win prob: {win_prob_pct}.")
-    crasher_tmpl  = rules.get("crasher_template", "{player} {sg_value} SG below expectation thru {thru}, {percentile_pct} percentile. Win prob: {win_prob_pct}.")
+    counts        = state.setdefault("round_alert_counts", {}).setdefault(
+        round_key, {"heater_am": 0, "heater_pm": 0, "heater": 0, "crasher": 0}
+    )
+    shakedown  = rules.get("shakedown_mode", True) and state.get("shakedown_mode", True)
+    muted      = set(state.get("muted_players", []))
+    # Per-player round suppression (Bug 6): once a player alerts this round, skip them
+    alerted_this_round = set(
+        state.setdefault("alerted_players_this_round", {}).get(round_key, [])
+    )
+    heater_tmpl  = rules.get("heater_template", "{player} {sg_value} SG thru {thru}, {percentile_pct} percentile. Win prob: {win_prob_pct}.")
+    crasher_tmpl = rules.get("crasher_template", "{player} {sg_value} SG below expectation thru {thru}, {percentile_pct} percentile. Win prob: {win_prob_pct}.")
 
-    heater_cap  = heater_rules.get("per_round_cap", 3)
     crasher_cap = crasher_rules.get("per_round_cap", 2)
 
     sent_any = False
 
-    for signal, players, cap, tmpl in [
-        ("heater",  result.get("heaters", []),  heater_cap,  heater_tmpl),
-        ("crasher", result.get("crashers", []), crasher_cap, crasher_tmpl),
+    # bucket  = key in round_alert_counts (tracks capacity)
+    # logical = "heater"|"crasher" (for templates, logging, registry lookup)
+    for bucket, logical, players, cap, tmpl in [
+        (heater_bucket, "heater",  result.get("heaters", []),  heater_cap,  heater_tmpl),
+        ("crasher",     "crasher", result.get("crashers", []), crasher_cap, crasher_tmpl),
     ]:
-        if counts.get(signal, 0) >= cap:
+        if counts.get(bucket, 0) >= cap:
             continue
         for p in players:
-            if counts.get(signal, 0) >= cap:
+            if counts.get(bucket, 0) >= cap:
                 break
             name = p["player_name"]
             if name in muted:
                 continue
-            aid = _alert_id(state["event_slug"], round_num, name, signal)
+            if name in alerted_this_round:
+                log.debug("Per-round cooldown: %s already alerted this round — skipping", name)
+                continue
+            aid  = _alert_id(state["event_slug"], round_num, name, logical)
             text = _format_alert(
                 tmpl,
                 player=name,
@@ -444,17 +486,24 @@ def evaluate_push_alerts(state: dict, bot_module, dry_run: bool = False) -> None
                 keyboard = bot_module.build_shakedown_keyboard(aid)
             if not dry_run:
                 bot_module.send_push(text, inline_keyboard=keyboard)
-                counts[signal] = counts.get(signal, 0) + 1
+                counts[bucket] = counts.get(bucket, 0) + 1
                 state["last_alert_ts"] = int(now)
                 sent_any = True
+                alerted_this_round.add(name)
+                state["alerted_players_this_round"].setdefault(round_key, [])
+                if name not in state["alerted_players_this_round"][round_key]:
+                    state["alerted_players_this_round"][round_key].append(name)
+                # Store bucket (not logical) as signal so noise-refund targets the right slot
                 state.setdefault("alert_registry", {})[aid] = {
-                    "signal": signal, "round_key": round_key, "player": name
+                    "signal": bucket, "round_key": round_key, "player": name
                 }
-                _log_event("push_alert", signal=signal, player=name,
+                _log_event("push_alert", signal=logical, bucket=bucket, player=name,
                             alert_id=aid, percentile=p.get("percentile"),
-                            win_prob=p.get("win_prob"), thru=p.get("thru"))
+                            win_prob=p.get("win_prob"), thru=p.get("thru"),
+                            et_hour=et_hour, round=round_num)
             else:
-                log.info("[DRY RUN] would send %s alert for %s", signal, name)
+                log.info("[DRY RUN] would send %s alert for %s (bucket=%s)",
+                         logical, name, bucket)
 
     if sent_any:
         _save_state(state)
@@ -748,7 +797,8 @@ def _tick_between_rounds(now: float) -> None:
             )
             for key in ("event_name", "event_slug", "event_year", "r07_fired",
                         "tournament_start_date", "tournament_end_date",
-                        "last_live_check", "round_alert_counts", "muted_players"):
+                        "last_live_check", "round_alert_counts", "muted_players",
+                        "alerted_players_this_round"):
                 _state[key] = DEFAULT_STATE.get(key)
             _state["completed_rounds"] = 0
             _state["mode"] = "off_week"
@@ -771,9 +821,20 @@ def _tick_between_rounds(now: float) -> None:
                 f"(*{_state['event_name']}*). Ask me where things stand!"
             )
         _state["mode"] = "in_round"
-        # Reset per-round alert counts for the new round
-        round_key = str(completed + 1)
-        _state.setdefault("round_alert_counts", {})[round_key] = {"heater": 0, "crasher": 0}
+        # Reset per-round caps and per-player suppression for the new round
+        next_round = completed + 1
+        round_key  = str(next_round)
+        if next_round >= 3:
+            # Weekend rounds: single flat heater bucket (AM/PM split not used)
+            _state.setdefault("round_alert_counts", {})[round_key] = {
+                "heater": 0, "crasher": 0
+            }
+        else:
+            # Weekday rounds: separate AM/PM heater buckets
+            _state.setdefault("round_alert_counts", {})[round_key] = {
+                "heater_am": 0, "heater_pm": 0, "crasher": 0
+            }
+        _state.setdefault("alerted_players_this_round", {})[round_key] = []
         _save_state(_state)
         _log_event("transition", to="in_round", next_round=completed + 1)
     else:
@@ -809,7 +870,7 @@ def _tick_post_event(now: float) -> None:
     # Return to off_week, reset event state
     for key in ("event_name", "event_slug", "event_year", "r07_fired",
                  "last_live_check", "round_alert_counts", "muted_players",
-                 "alert_registry"):
+                 "alert_registry", "alerted_players_this_round"):
         _state[key] = DEFAULT_STATE.get(key)
     _state["completed_rounds"] = 0
     _state["mode"] = "off_week"
