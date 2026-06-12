@@ -512,15 +512,20 @@ if (file.exists(stack_model_file)) {
   N_DRAWS          <- 2000L
   remaining_rounds <- 4L - completed_round
 
-  # Simulate remaining rounds, then anchor to actual completed-round SG
+  # posterior_predict returns sg_residual samples (deviation above player's own
+  # baseline). player_skill_prior must be added to each future round's draws
+  # before anchoring to actual_total_sg (which is already absolute SG).
+  skill_priors <- score_frame_brms$player_skill_prior
+
   future_sg <- if (remaining_rounds > 0L) {
     Reduce("+", lapply(seq_len(remaining_rounds), function(r) {
-      posterior_predict(
+      draws <- posterior_predict(
         brms_stack,
         newdata          = score_frame_brms,
         ndraws           = N_DRAWS,
         allow_new_levels = TRUE
       )
+      sweep(draws, 2, skill_priors, "+")
     }))
   } else {
     matrix(0, nrow = N_DRAWS, ncol = nrow(score_frame_brms))

@@ -393,17 +393,20 @@ if (file.exists(stack_model_file)) {
 
   N_DRAWS <- 2000L
 
-  # Simulate 4-round tournament. Each call draws fresh posterior samples so
-  # rounds are conditionally independent — slight overstatement of cross-round
-  # uncertainty, negligible effect on win-probability ranking.
+  # posterior_predict returns sg_residual samples (deviation above player's own
+  # baseline). player_skill_prior must be added back before ranking so that a
+  # club pro +2 above their -4.8 baseline loses to a tour pro +1 above +1.2.
+  skill_priors <- score_frame_brms$player_skill_prior
+
   tournament_totals <- Reduce("+", lapply(seq_len(4L), function(r) {
-    posterior_predict(
+    draws <- posterior_predict(
       brms_stack,
       newdata          = score_frame_brms,
       ndraws           = N_DRAWS,
       allow_new_levels = TRUE
     )
-  }))  # [N_DRAWS x n_players]
+    sweep(draws, 2, skill_priors, "+")
+  }))  # [N_DRAWS x n_players], units: sg_total above field average
 
   ranks_mat  <- t(apply(tournament_totals, 1, function(row) rank(-row, ties.method = "random")))
   win_prob   <- colMeans(ranks_mat == 1L)
