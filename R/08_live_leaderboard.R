@@ -43,11 +43,19 @@ cli_h2("Pulling live tournament stats")
 # return non-empty player data.
 
 detect_completed_round <- function() {
+  # Check rounds 3 -> 1. A round is only considered complete when a
+  # meaningful fraction of the field has finished all 18 holes (thru == 18
+  # or thru == "F"). Checking for *any* non-empty data frame is too loose:
+  # DataGolf may return partial/placeholder rows for future rounds.
   for (r in 3:1) {
     tryCatch({
       d <- dg_live_tournament_stats(round = r, force_refresh = TRUE)
       players <- d[["live_stats"]] %||% d[["rankings"]] %||% d[["data"]] %||% d[[1]]
-      if (is.data.frame(players) && nrow(players) > 0) return(r)
+      if (!is.data.frame(players) || nrow(players) == 0) next
+      # Require at least 30 players to have finished the round
+      thru_vals  <- suppressWarnings(as.integer(as.character(players[["thru"]] %||% players[["hole"]] %||% 0)))
+      finished_n <- sum(!is.na(thru_vals) & thru_vals >= 18, na.rm = TRUE)
+      if (finished_n >= 30) return(r)
     }, error = function(e) NULL)
   }
   cli_abort("Could not detect completed round from live data. Pass it explicitly.")

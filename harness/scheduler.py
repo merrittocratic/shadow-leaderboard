@@ -539,38 +539,30 @@ def _tick_field_pending(now: float) -> None:
     if len(field) >= 50:  # field is populated
         event_name = _state["event_name"]
         event_slug = _state["event_slug"]
-        # Ask Steve for confirmation before firing R/07
-        import uuid
-        prompt_id = uuid.uuid4().hex[:8]
-
-        def _on_confirm(pid: str, answer: str) -> None:
-            if answer == "yes":
-                success = _fire_r("R/07_pga_preview.R", dry_run=_dry_run)
-                if success:
-                    _state["mode"]      = "pretournament"
-                    _state["r07_fired"] = True
-                    _git_commit_and_push(f"chore: {event_slug} preview artifact")
-                    _log_event("transition", to="pretournament", event=event_name)
-                    if _bot_module:
-                        _bot_module.send_push(f"✅ Preview generated for *{event_name}*. "
-                                               "Ask me 'who's the model on?' when you're ready.")
-                else:
-                    if _bot_module:
-                        _bot_module.send_push(f"⚠️ R/07_pga_preview.R failed for {event_name}. "
-                                               "Check logs: `data/logs/earnest.jsonl`")
-            else:
-                _state["mode"] = "off_week"
-                _log_event("field_confirm_skipped", event=event_name)
-            _save_state(_state)
-
-        if _bot_module:
-            _bot_module.register_confirm_callback(prompt_id, _on_confirm)
-            keyboard = _bot_module.build_confirm_keyboard(prompt_id)
-            _bot_module.send_push(
-                f"📅 *{event_name}* field is populated. Fire R/07 to generate the preview?",
-                inline_keyboard=keyboard,
-            )
-        _save_state(_state)
+        # Fire R/07 automatically — no inline-button confirm needed.
+        # The old confirm flow used Telegram inline buttons, but OpenClaw
+        # polls the same bot token and consumes callback_queries before the
+        # harness polling loop sees them, so the callback was never fired.
+        # Auto-fire is safe: Steve controls this harness, and the field
+        # being populated is sufficient signal.
+        log.info("Field populated (%d players) for %s — auto-firing R/07", len(field), event_name)
+        success = _fire_r("R/07_pga_preview.R", dry_run=_dry_run)
+        if success:
+            _state["mode"]      = "pretournament"
+            _state["r07_fired"] = True
+            _git_commit_and_push(f"chore: {event_slug} preview artifact")
+            _log_event("transition", to="pretournament", event=event_name)
+            if _bot_module:
+                _bot_module.send_push(
+                    f"✅ *{event_name}* preview generated — field has {len(field)} players. "
+                    "Ask me 'who's the model on?' when you're ready."
+                )
+        else:
+            if _bot_module:
+                _bot_module.send_push(
+                    f"⚠️ R/07_pga_preview.R failed for *{event_name}*. "
+                    "Check logs: `data/logs/earnest.jsonl`"
+                )
     _save_state(_state)
 
 
