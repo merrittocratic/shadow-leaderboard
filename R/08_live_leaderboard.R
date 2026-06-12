@@ -429,9 +429,10 @@ score_frame <- field_players |>
       course_weights_df$weight_arg  * sg_arg_prior  +
       course_weights_df$weight_putt * sg_putt_prior
   ) |>
+  mutate(n_prior_rounds = replace_na(n_prior_rounds, as.integer(round(mean(n_prior_rounds, na.rm = TRUE))))) |>
   mutate(across(
     c(player_skill_prior, player_skill_prior_decay,
-      n_prior_rounds, course_fit_score,
+      course_fit_score,
       sg_ott_prior, sg_app_prior,
       sg_arg_prior, sg_putt_prior,
       starts_with("form_residual"),
