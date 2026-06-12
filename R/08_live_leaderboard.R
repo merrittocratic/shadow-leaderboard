@@ -53,8 +53,10 @@ detect_completed_round <- function() {
       players <- d[["live_stats"]] %||% d[["rankings"]] %||% d[["data"]] %||% d[[1]]
       if (!is.data.frame(players) || nrow(players) == 0) next
       # Require at least 30 players to have finished the round
-      thru_vals  <- suppressWarnings(as.integer(as.character(players[["thru"]] %||% players[["hole"]] %||% 0)))
-      finished_n <- sum(!is.na(thru_vals) & thru_vals >= 18, na.rm = TRUE)
+      thru_raw   <- as.character(players[["thru"]] %||% players[["hole"]] %||%
+                                  rep("0", nrow(players)))
+      thru_int   <- suppressWarnings(as.integer(thru_raw))
+      finished_n <- sum(thru_raw == "F" | (!is.na(thru_int) & thru_int >= 18), na.rm = TRUE)
       if (finished_n >= 30) return(r)
     }, error = function(e) NULL)
   }

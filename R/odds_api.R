@@ -79,13 +79,13 @@ fetch_odds_snapshot <- function(slug, year, force_refresh = FALSE) {
     return(readRDS(cache_file))
   }
 
-  sport_key <- .ODDS_SPORT_KEYS[[slug]]
-  if (is.null(sport_key)) {
-    cli_alert_warning(
+  if (!slug %in% names(.ODDS_SPORT_KEYS)) {
+    cli_alert_info(
       "No Odds API sport key for slug '{slug}' — only majors are mapped. Skipping."
     )
-    return(NULL)
+    return(invisible(NULL))
   }
+  sport_key <- .ODDS_SPORT_KEYS[[slug]]
 
   cli_alert_info("Fetching Betfair Exchange odds: {sport_key}")
   events <- tryCatch(

@@ -37,11 +37,12 @@ log = logging.getLogger(__name__)
 # Paths
 # ---------------------------------------------------------------------------
 
-REPO_ROOT  = Path(__file__).resolve().parent.parent
-STATE_FILE = REPO_ROOT / "data" / "cache" / "earnest_state.json"
-LOG_FILE   = REPO_ROOT / "data" / "logs" / "earnest.jsonl"
-RULES_FILE = REPO_ROOT / "config" / "earnest_push_rules.yaml"
-SECRETS_SH = REPO_ROOT / "scripts" / "with-secrets.sh"
+REPO_ROOT      = Path(__file__).resolve().parent.parent
+STATE_FILE     = REPO_ROOT / "data" / "cache" / "earnest_state.json"
+LOG_FILE       = REPO_ROOT / "data" / "logs" / "earnest.jsonl"
+RULES_FILE     = REPO_ROOT / "config" / "earnest_push_rules.yaml"
+SECRETS_SH     = REPO_ROOT / "scripts" / "with-secrets.sh"
+CALLBACK_QUEUE = REPO_ROOT / "data" / "callbacks" / "callback_queue.jsonl"
 
 DG_BASE_URL = "https://feeds.datagolf.com"
 
@@ -65,6 +66,8 @@ DEFAULT_STATE: dict = {
     "last_r08_fail_notified":  {},     # {str(round): unix ts} — spam guard
     "muted_players":           [],
     "shakedown_mode":          True,
+    "alert_registry":          {},     # {alert_id: {signal, round_key, player}}
+    "callback_queue_offset":   0,      # lines consumed from callback_queue.jsonl
     "updated_at":              None,
 }
 
@@ -246,6 +249,108 @@ def _git_commit_and_push(message: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Callback queue reader (Earnest file-drop seam)
+# ---------------------------------------------------------------------------
+
+def _handle_shake_callback(cb: dict) -> None:
+    """Process a single shake entry from the callback queue."""
+    aid    = cb.get("alert_id", "")
+    action = cb.get("action", "")
+    ts     = cb.get("ts", "")
+    registry = _state.get("alert_registry", {})
+    entry    = registry.get(aid)
+
+    if entry is None:
+        log.warning("shake for unknown alert_id '%s' (action=%s) — logging only", aid, action)
+        _log_event("shake_unknown", alert_id=aid, action=action, ts=ts)
+        return
+
+    signal    = entry.get("signal", "")
+    round_key = entry.get("round_key", "")
+    player    = entry.get("player", "")
+
+    if action == "keeper":
+        _log_event("shake_keeper", alert_id=aid, player=player,
+                   signal=signal, round_key=round_key, ts=ts)
+
+    elif action == "noise":
+        counts = _state.setdefault("round_alert_counts", {}).setdefault(
+            round_key, {"heater": 0, "crasher": 0}
+        )
+        counts[signal] = max(0, counts.get(signal, 0) - 1)
+        _log_event("shake_noise", alert_id=aid, player=player,
+                   signal=signal, round_key=round_key, ts=ts,
+                   new_count=counts[signal])
+        log.info("Noise: refunded %s cap slot for round %s (count now %d)",
+                 signal, round_key, counts[signal])
+
+    elif action == "mute":
+        muted = _state.setdefault("muted_players", [])
+        if player not in muted:
+            muted.append(player)
+        _log_event("shake_mute", alert_id=aid, player=player,
+                   signal=signal, round_key=round_key, ts=ts)
+        log.info("Muted player: %s", player)
+
+    else:
+        log.warning("Unknown shake action '%s' for alert_id '%s'", action, aid)
+        _log_event("shake_unknown_action", alert_id=aid, action=action, ts=ts)
+
+
+def _drain_callback_queue() -> None:
+    """Read new lines from Earnest's drop file and process them.
+
+    Earnest appends JSON lines to CALLBACK_QUEUE on receipt of any
+    Telegram callback_query. We read from our last offset, process each
+    line, then advance the offset in state. File is never deleted here —
+    Earnest owns the write side.
+    """
+    if not CALLBACK_QUEUE.exists():
+        return
+    try:
+        lines = CALLBACK_QUEUE.read_text(encoding="utf-8").splitlines()
+    except Exception as e:
+        log.warning("callback_queue read error: %s", e)
+        return
+
+    offset = _state.get("callback_queue_offset", 0)
+    new_lines = lines[offset:]
+    if not new_lines:
+        return
+
+    processed = 0
+    for line in new_lines:
+        line = line.strip()
+        if not line:
+            processed += 1
+            continue
+        try:
+            cb = json.loads(line)
+        except json.JSONDecodeError:
+            log.warning("callback_queue: malformed JSON at offset %d — skipping",
+                        offset + processed)
+            processed += 1
+            continue
+
+        cb_type = cb.get("type")
+        if cb_type == "shake":
+            _handle_shake_callback(cb)
+        elif cb_type == "confirm":
+            # Auto-fire is in effect; confirm callbacks are no longer acted on.
+            _log_event("callback_confirm_dropped",
+                       prompt_id=cb.get("prompt_id"), answer=cb.get("answer"))
+        else:
+            log.warning("callback_queue: unknown type '%s' at offset %d",
+                        cb_type, offset + processed)
+        processed += 1
+
+    _state["callback_queue_offset"] = offset + processed
+    _save_state(_state)
+    log.info("callback_queue: drained %d lines (offset now %d)",
+             processed, offset + processed)
+
+
+# ---------------------------------------------------------------------------
 # Push alert engine
 # ---------------------------------------------------------------------------
 
@@ -342,6 +447,9 @@ def evaluate_push_alerts(state: dict, bot_module, dry_run: bool = False) -> None
                 counts[signal] = counts.get(signal, 0) + 1
                 state["last_alert_ts"] = int(now)
                 sent_any = True
+                state.setdefault("alert_registry", {})[aid] = {
+                    "signal": signal, "round_key": round_key, "player": name
+                }
                 _log_event("push_alert", signal=signal, player=name,
                             alert_id=aid, percentile=p.get("percentile"),
                             win_prob=p.get("win_prob"), thru=p.get("thru"))
@@ -479,6 +587,7 @@ def init(bot_module, dry_run: bool = False) -> None:
 def tick() -> None:
     """Called every 15 minutes by the schedule loop."""
     global _state
+    _drain_callback_queue()
     mode = _state.get("mode", "off_week")
     now  = time.time()
     _log_event("tick", mode=mode)
@@ -699,7 +808,8 @@ def _tick_post_event(now: float) -> None:
             log.exception("Retrospective harness wrap failed: %s", e)
     # Return to off_week, reset event state
     for key in ("event_name", "event_slug", "event_year", "r07_fired",
-                 "last_live_check", "round_alert_counts", "muted_players"):
+                 "last_live_check", "round_alert_counts", "muted_players",
+                 "alert_registry"):
         _state[key] = DEFAULT_STATE.get(key)
     _state["completed_rounds"] = 0
     _state["mode"] = "off_week"
