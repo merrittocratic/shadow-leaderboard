@@ -171,7 +171,11 @@ def _detect_round_complete(live_data: dict) -> tuple[bool, int]:
         return False, 0
     # >90% of field finished → call the round complete
     pct_finished = sum(1 for t in thru_vals if t == 18) / len(thru_vals)
-    # Infer round number from live data header
+    # DG's "round" field can lag or return stale values (e.g. reports round=1
+    # even after R2 completes). Don't trust it for the completed round number —
+    # the caller uses state.completed_rounds+1 as the authoritative floor guard.
+    # We still return it for informational purposes but the floor check in the
+    # caller (_run_in_round_tick) is the real gatekeeper.
     round_num = int(live_data.get("round", 1) or 1)
     return pct_finished >= 0.90, round_num
 
@@ -749,16 +753,21 @@ def _tick_in_round(now: float) -> None:
         # tournament ends. Never allow completed_rounds to regress.
         floor = _state.get("completed_rounds", 0)
         if round_num <= floor:
+            # DG's round field is lagging — infer the actual completed round
+            # as floor+1 (the next expected round). This handles cases where
+            # DG reports round=1 even after R2 (or later) completes.
+            inferred = floor + 1
             log.warning(
-                "Round-complete detection returned round %d but state floor is %d — ignoring",
-                round_num, floor,
+                "Round-complete detection returned round %d but state floor is %d "
+                "— DG round field appears stale, inferring round %d",
+                round_num, floor, inferred,
             )
-        else:
-            _state["mode"]             = "between_rounds"
-            _state["completed_rounds"] = round_num
-            _save_state(_state)
-            _log_event("transition", to="between_rounds", completed_round=round_num)
-            return
+            round_num = inferred
+        _state["mode"]             = "between_rounds"
+        _state["completed_rounds"] = round_num
+        _save_state(_state)
+        _log_event("transition", to="between_rounds", completed_round=round_num)
+        return
 
     # Not complete — check for suspension before running alert eval
     if _is_play_suspended(_state, live):
