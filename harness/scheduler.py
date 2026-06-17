@@ -729,7 +729,19 @@ def _tick_field_pending(now: float) -> None:
 
 
 def _tick_pretournament(now: float) -> None:
-    # Idle — just check if round 1 has started
+    # Idle — just check if round 1 has started.
+    # Date guard: never transition to in_round before the tournament start date.
+    # Without this, stale DG data (from the prior event) triggers a premature
+    # in_round → between_rounds → date_window_guard reset cycle that causes
+    # the preview notification to fire every morning pre-tournament.
+    start_str = _state.get("tournament_start_date")
+    if start_str:
+        today      = datetime.now(timezone.utc).date()
+        start_date = _parse_date(start_str).date()
+        if today < start_date:
+            log.debug("pretournament date guard: today %s < start %s — skipping live check", today, start_date)
+            return
+
     live = _get_dg_live()
     players = (live.get("live_stats") or live.get("rankings") or live.get("data") or [])
     if players and any(str(p.get("thru", "0")) not in ("0", "", "None") for p in players[:5]):
