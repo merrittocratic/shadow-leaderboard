@@ -150,6 +150,27 @@ def _get_dg_live() -> dict:
 _dg_live = _get_dg_live
 
 
+def _norm_event(s: str | None) -> str:
+    """Normalize tournament names/ids for DG schedule/live comparisons."""
+    return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
+
+
+def _artifact_slug(event_name: str | None) -> str:
+    """Slug used by R preview/eval artifacts, e.g. U.S. Open -> u_s_open."""
+    return re.sub(r"[^a-z0-9]+", "_", str(event_name or "unknown").lower()).strip("_")
+
+
+def _resolve_schedule_event(event_name: str | None = None, event_slug: str | None = None) -> dict | None:
+    """Find the DataGolf schedule row for a live/upcoming event."""
+    name_key = _norm_event(event_name)
+    slug_key = _norm_event(event_slug)
+    for ev in _get_dg_schedule():
+        if (slug_key and _norm_event(ev.get("event_id")) == slug_key) or \
+           (name_key and _norm_event(ev.get("event_name")) == name_key):
+            return ev
+    return None
+
+
 def _detect_round_complete(live_data: dict) -> tuple[bool, int]:
     """Return (round_is_complete, completed_round_number)."""
     players = (live_data.get("live_stats") or live_data.get("rankings") or
@@ -541,8 +562,9 @@ def _detect_active_tournament() -> dict | None:
         if not active:
             return None
         event_name = live.get("event_name", "Unknown Event")
-        event_slug = live.get("event_id", "").replace(" ", "_").lower() or "unknown"
-        event_year = int(live.get("calendar_year", datetime.now().year))
+        live_event_id = live.get("event_id")
+        event_slug = str(live_event_id).replace(" ", "_").lower() if live_event_id else "unknown"
+        event_year = int(live.get("calendar_year") or datetime.now().year)
         # Infer completed rounds from existing artifacts
         completed = 0
         for r in (3, 2, 1):
@@ -556,20 +578,17 @@ def _detect_active_tournament() -> dict | None:
         # DG's schedule API returns all season events, so recently completed
         # events are still present. Normalize both sides to avoid
         # case/punctuation mismatches between live and schedule responses.
-        def _norm(s: str) -> str:
-            return re.sub(r"[^a-z0-9]", "", s.lower())
-
         start_date = end_date = None
         try:
-            for ev in _get_dg_schedule():
-                if (_norm(ev.get("event_id",   "")) == _norm(event_slug) or
-                        _norm(ev.get("event_name", "")) == _norm(event_name)):
-                    start_str = ev.get("date", ev.get("start_date", ""))
-                    if start_str:
-                        start_dt   = _parse_date(start_str)
-                        start_date = start_dt.strftime("%Y-%m-%d")
-                        end_date   = (start_dt + timedelta(days=3)).strftime("%Y-%m-%d")
-                    break
+            ev = _resolve_schedule_event(event_name=event_name, event_slug=event_slug)
+            if ev:
+                event_slug = _artifact_slug(event_name)
+                event_year = int(ev.get("calendar_year") or event_year)
+                start_str = ev.get("date", ev.get("start_date", ""))
+                if start_str:
+                    start_dt   = _parse_date(start_str)
+                    start_date = start_dt.strftime("%Y-%m-%d")
+                    end_date   = (start_dt + timedelta(days=3)).strftime("%Y-%m-%d")
         except Exception:
             pass
 
@@ -676,11 +695,13 @@ def _tick_off_week(now: float) -> None:
         start = ev.get("date", ev.get("start_date", ""))
         if not start:
             continue
-        days_until = (_parse_date(start) - datetime.now(timezone.utc)).days
+        # Compare dates, not timedeltas. A same-day event after 00:00 UTC should
+        # still be considered "today"; timedelta.days would be -1 and skip it.
+        days_until = (_parse_date(start).date() - datetime.now(timezone.utc).date()).days
         if 0 <= days_until <= 7:
             _state["mode"]       = "field_pending"
             _state["event_name"] = ev.get("event_name", "Unknown Event")
-            _state["event_slug"] = ev.get("event_id",   "unknown")
+            _state["event_slug"] = _artifact_slug(_state["event_name"])
             _state["event_year"] = int(ev.get("calendar_year", datetime.now().year))
             start_dt = _parse_date(start)
             _state["tournament_start_date"] = start_dt.strftime("%Y-%m-%d")
@@ -744,6 +765,11 @@ def _tick_pretournament(now: float) -> None:
 
     live = _get_dg_live()
     players = (live.get("live_stats") or live.get("rankings") or live.get("data") or [])
+    live_event_name = live.get("event_name")
+    if live_event_name and _norm_event(live_event_name) != _norm_event(_state.get("event_name")):
+        log.warning("pretournament live event mismatch: state=%s live=%s — not transitioning",
+                    _state.get("event_name"), live_event_name)
+        return
     if players and any(str(p.get("thru", "0")) not in ("0", "", "None") for p in players[:5]):
         _state["mode"] = "in_round"
         _state["completed_rounds"] = 0
@@ -758,6 +784,28 @@ def _tick_in_round(now: float) -> None:
     _state["last_live_check"] = now
 
     live = _get_dg_live()
+    live_event_name = live.get("event_name")
+    if live_event_name and _norm_event(live_event_name) != _norm_event(_state.get("event_name")):
+        # Recover if the scheduler latched onto the next event while DG live is
+        # showing the current one (seen around same-day UTC/date boundaries).
+        ev = _resolve_schedule_event(event_name=live_event_name)
+        if ev:
+            start_dt = _parse_date(ev.get("date", ev.get("start_date", "")))
+            _state.update({
+                "event_name": live_event_name,
+                "event_slug": _artifact_slug(live_event_name),
+                "event_year": int(ev.get("calendar_year") or datetime.now().year),
+                "tournament_start_date": start_dt.strftime("%Y-%m-%d"),
+                "tournament_end_date": (start_dt + timedelta(days=3)).strftime("%Y-%m-%d"),
+                "completed_rounds": 0,
+                "r07_fired": True,
+            })
+            _log_event("live_event_recovery", event=live_event_name, slug=_state["event_slug"])
+            _save_state(_state)
+        else:
+            log.warning("in_round live event mismatch unresolved: state=%s live=%s",
+                        _state.get("event_name"), live_event_name)
+            return
     is_complete, round_num = _detect_round_complete(live)
 
     if is_complete:

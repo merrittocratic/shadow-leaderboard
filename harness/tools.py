@@ -520,12 +520,23 @@ def get_heating_up(
     Heater: current in-round SG ≥ P{percentile_gate*100} of their predicted dist.
     Crasher: current in-round SG ≤ P{(1-percentile_gate)*100}, position ≤ 30.
     """
-    # Find most recent shadow leaderboard
+    # Find most recent shadow leaderboard, but do not let stale generic
+    # live_leaderboard_after_r*.csv files from the prior tournament override
+    # the current event's fresh preview during Round 1. R/08 writes generic
+    # filenames, so mtime is the safest lightweight event-boundary guard.
     preds_df: pd.DataFrame | None = None
+    preview_candidates = [
+        OUTPUT_DIR / f"{tournament}_preview_{year}.csv",
+        EVAL_DIR / f"predictions_{tournament}_{year}_preview.rds",
+        EVAL_DIR / f"predictions_{tournament}_{year}_preview.parquet",
+    ]
+    preview_mtime = max((x.stat().st_mtime for x in preview_candidates if x.exists()), default=0)
+
     for r in (3, 2, 1):
         rds_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.rds"
         csv_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.csv"
-        if csv_path.exists() or rds_path.exists():
+        existing = [x for x in (csv_path, rds_path) if x.exists()]
+        if existing and max(x.stat().st_mtime for x in existing) >= preview_mtime:
             preds_df = _read_artifact(f"live_leaderboard_after_r{r}")
             last_completed_round = r
             break
