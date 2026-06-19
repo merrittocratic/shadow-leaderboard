@@ -275,6 +275,17 @@ pick_best_row <- function(rows) {
     select(-.n_for_sort)
 }
 
+# Normalize venue names for fuzzy matching: lowercase, expand GC/CC abbreviations,
+# strip all non-alphanumeric. Handles mismatches like "Golf Club" vs "GC".
+.norm_venue <- function(x) {
+  x |>
+    tolower() |>
+    stringr::str_replace_all("\\bgolf club\\b", "gc") |>
+    stringr::str_replace_all("\\bcountry club\\b", "cc") |>
+    stringr::str_replace_all("\\bgolf course\\b", "gc") |>
+    stringr::str_replace_all("[^a-z0-9]", "")
+}
+
 course_row <- if (!is.na(live_course_num)) {
   taxonomy_full |> filter(course_num == live_course_num)
 } else {
@@ -283,9 +294,10 @@ course_row <- if (!is.na(live_course_num)) {
 resolved_via <- if (nrow(course_row) > 0) "course_num" else NA_character_
 
 if (nrow(course_row) == 0 && !is.na(live_course_name)) {
-  course_row <- taxonomy_full |> filter(venue_name == live_course_name)
+  norm_live  <- .norm_venue(live_course_name)
+  course_row <- taxonomy_full |> filter(.norm_venue(venue_name) == norm_live)
   if (nrow(course_row) > 1L) course_row <- pick_best_row(course_row)
-  if (nrow(course_row) > 0)  resolved_via <- "course_name"
+  if (nrow(course_row) > 0)  resolved_via <- "course_name_normalized"
 }
 
 if (nrow(course_row) == 0) {
