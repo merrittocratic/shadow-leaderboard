@@ -512,6 +512,9 @@ def get_heating_up(
     min_thru: int = 9,
     percentile_gate: float = 0.90,
     max_completed_round: int | None = None,
+    live_round: int | None = None,
+    crasher_percentile_gate: float | None = None,
+    crasher_max_position: int = 30,
 ) -> dict:
     """
     Identify players running hot (heaters) or cold (crashers) relative to
@@ -566,10 +569,11 @@ def get_heating_up(
             return {"error": "No model artifact found — run R/07_pga_preview.R or R/08_live_leaderboard.R"}
 
     # Pull live field for current in-round SG
+    live_round_param = str(live_round) if live_round is not None else "event_avg"
     live_data = _dg_live_request(
         "preds/live-tournament-stats",
         {"stats": "sg_total",
-         "round": "event_avg",
+         "round": live_round_param,
          "display": "value",
          "file_format": "json"},
     )
@@ -652,13 +656,19 @@ def get_heating_up(
         .sort_values("equity_score", ascending=False)
         .head(top_n)
     )
-    # Crashers: P{1-gate} or below, position ≤ 30
-    crasher_mask = merged["percentile"] <= (1 - percentile_gate)
+    # Crashers: separate lower-tail gate, current leaderboard relevance, ranked
+    # by equity at risk. The old event_avg feed + equity_score ascending combo
+    # could bury obvious live-round collapses behind low-equity names.
+    crasher_gate = crasher_percentile_gate
+    if crasher_gate is None:
+        crasher_gate = 1 - percentile_gate
+    crasher_mask = merged["percentile"] <= crasher_gate
     if "pos_num" in merged.columns:
-        crasher_mask = crasher_mask & (merged["pos_num"] <= 30)
+        crasher_mask = crasher_mask & (merged["pos_num"] <= crasher_max_position)
+    merged["crasher_score"] = merged["win_prob"] * (1 - merged["percentile"])
     crashers = (
         merged[crasher_mask]
-        .sort_values("equity_score", ascending=True)
+        .sort_values("crasher_score", ascending=False)
         .head(top_n)
     )
 

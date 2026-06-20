@@ -19,9 +19,9 @@ heater:
 # Crasher thresholds (leaderboard players falling apart)
 # ---------------------------------------------------------------------------
 crasher:
-  percentile_gate: 0.05          # P5 of predicted SG distribution
-  min_holes_played: 9
-  max_position: 30               # only flag players in top 30 positions
+  percentile_gate: 0.10          # P10 of predicted SG distribution
+  min_holes_played: 7
+  max_position: 50               # catch contenders who have already slid down the board
   per_round_cap: 2               # max crasher alerts per round
 
 # ---------------------------------------------------------------------------

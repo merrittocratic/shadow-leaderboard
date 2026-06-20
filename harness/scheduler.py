@@ -456,8 +456,15 @@ def evaluate_push_alerts(state: dict, bot_module, dry_run: bool = False) -> None
             state["event_slug"],
             state["event_year"],
             top_n=5,
+            min_thru=min(
+                heater_rules.get("min_holes_played", 9),
+                rules.get("crasher", {}).get("min_holes_played", 9),
+            ),
             percentile_gate=heater_rules.get("percentile_gate", 0.95),
             max_completed_round=state.get("completed_rounds", 0),
+            live_round=state.get("completed_rounds", 0) + 1,
+            crasher_percentile_gate=rules.get("crasher", {}).get("percentile_gate", 0.05),
+            crasher_max_position=rules.get("crasher", {}).get("max_position", 30),
         )
     except Exception as e:
         log.warning("get_heating_up failed: %s", e)
