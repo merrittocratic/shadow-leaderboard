@@ -490,6 +490,8 @@ ranked_table <- score_frame |>
   select(
     rank,
     player_name,
+    wave,
+    wind_speed_tee,
     predicted_sg_total,
     predicted_sg_residual = .pred,
     player_skill_prior,
