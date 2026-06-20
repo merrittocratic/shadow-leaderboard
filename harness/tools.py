@@ -511,6 +511,7 @@ def get_heating_up(
     top_n: int = 5,
     min_thru: int = 9,
     percentile_gate: float = 0.90,
+    max_completed_round: int | None = None,
 ) -> dict:
     """
     Identify players running hot (heaters) or cold (crashers) relative to
@@ -532,14 +533,28 @@ def get_heating_up(
     ]
     preview_mtime = max((x.stat().st_mtime for x in preview_candidates if x.exists()), default=0)
 
-    for r in (3, 2, 1):
-        rds_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.rds"
-        csv_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.csv"
-        existing = [x for x in (csv_path, rds_path) if x.exists()]
-        if existing and max(x.stat().st_mtime for x in existing) >= preview_mtime:
-            preds_df = _read_artifact(f"live_leaderboard_after_r{r}")
-            last_completed_round = r
-            break
+    # When the live scheduler calls this, trust state.completed_rounds over
+    # file mtimes. Preview artifacts can be regenerated mid-tournament, and a
+    # strict mtime guard would incorrectly fall back to pretournament instead
+    # of the valid post-round leaderboard.
+    if max_completed_round is not None and max_completed_round > 0:
+        for r in range(min(int(max_completed_round), 3), 0, -1):
+            rds_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.rds"
+            csv_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.csv"
+            if csv_path.exists() or rds_path.exists():
+                preds_df = _read_artifact(f"live_leaderboard_after_r{r}")
+                last_completed_round = r
+                break
+
+    if preds_df is None:
+        for r in (3, 2, 1):
+            rds_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.rds"
+            csv_path = OUTPUT_DIR / f"live_leaderboard_after_r{r}.csv"
+            existing = [x for x in (csv_path, rds_path) if x.exists()]
+            if existing and max(x.stat().st_mtime for x in existing) >= preview_mtime:
+                preds_df = _read_artifact(f"live_leaderboard_after_r{r}")
+                last_completed_round = r
+                break
 
     if preds_df is None:
         # Fall back to pre-tournament predictions

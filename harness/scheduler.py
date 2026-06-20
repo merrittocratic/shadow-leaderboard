@@ -457,6 +457,7 @@ def evaluate_push_alerts(state: dict, bot_module, dry_run: bool = False) -> None
             state["event_year"],
             top_n=5,
             percentile_gate=heater_rules.get("percentile_gate", 0.95),
+            max_completed_round=state.get("completed_rounds", 0),
         )
     except Exception as e:
         log.warning("get_heating_up failed: %s", e)
@@ -565,14 +566,16 @@ def _detect_active_tournament() -> dict | None:
         live_event_id = live.get("event_id")
         event_slug = str(live_event_id).replace(" ", "_").lower() if live_event_id else "unknown"
         event_year = int(live.get("calendar_year") or datetime.now().year)
-        # Infer completed rounds from existing artifacts
+        # Infer completed rounds from existing artifacts. This is only a first
+        # pass; after schedule-date resolution below, cap it by the current ET
+        # tournament day and live thru values so a stale/bogus future artifact
+        # cannot make recovery jump ahead a round.
         completed = 0
         for r in (3, 2, 1):
             if (REPO_ROOT / "output" / f"live_leaderboard_after_r{r}.rds").exists() or \
                (REPO_ROOT / "output" / f"live_leaderboard_after_r{r}.csv").exists():
                 completed = r
                 break
-        log.info("Active tournament detected: %s (completed rounds: %d)", event_name, completed)
 
         # Try to get tournament dates from the schedule for the date-window guard.
         # DG's schedule API returns all season events, so recently completed
@@ -589,8 +592,29 @@ def _detect_active_tournament() -> dict | None:
                     start_dt   = _parse_date(start_str)
                     start_date = start_dt.strftime("%Y-%m-%d")
                     end_date   = (start_dt + timedelta(days=3)).strftime("%Y-%m-%d")
+
+                    thru_vals = []
+                    for p in players:
+                        thru = str(p.get("thru", "")).strip()
+                        if thru in ("F", "18"):
+                            thru_vals.append(18)
+                        else:
+                            try:
+                                thru_vals.append(int(thru))
+                            except ValueError:
+                                pass
+                    pct_finished = (
+                        sum(1 for t in thru_vals if t == 18) / len(thru_vals)
+                        if thru_vals else 0
+                    )
+                    today_et = datetime.now(ZoneInfo("America/New_York")).date()
+                    day_idx  = max((today_et - start_dt.date()).days, 0)
+                    max_completed_by_date = min(day_idx + (1 if pct_finished >= 0.90 else 0), 4)
+                    completed = min(completed, max_completed_by_date)
         except Exception:
             pass
+
+        log.info("Active tournament detected: %s (completed rounds: %d)", event_name, completed)
 
         return {
             "event_name":            event_name,
@@ -760,6 +784,24 @@ def _tick_pretournament(now: float) -> None:
         today      = datetime.now(timezone.utc).date()
         start_date = _parse_date(start_str).date()
         if today < start_date:
+            # If DG live is showing a different active event, recover to that
+            # live tournament instead of staying latched to a future event.
+            # This catches the U.S. Open → Travelers rollover case where the
+            # scheduler advanced too early while the current major was still live.
+            detected = _detect_active_tournament()
+            if detected and _norm_event(detected.get("event_name")) != _norm_event(_state.get("event_name")):
+                det_start = detected.get("tournament_start_date")
+                det_end   = detected.get("tournament_end_date")
+                if det_start and det_end:
+                    today_et   = datetime.now(ZoneInfo("America/New_York")).date()
+                    start_date = _parse_date(det_start).date()
+                    end_date   = _parse_date(det_end).date()
+                    if start_date <= today_et <= end_date + timedelta(days=1):
+                        _state.update(detected)
+                        _state["mode"] = "in_round"
+                        _save_state(_state)
+                        _log_event("pretournament_live_recovery", to="in_round", **detected)
+                        return
             log.debug("pretournament date guard: today %s < start %s — skipping live check", today, start_date)
             return
 
@@ -823,6 +865,26 @@ def _tick_in_round(now: float) -> None:
                 round_num, floor, inferred,
             )
             round_num = inferred
+
+        # Local-date round guard: don't let stale all-18 DG snapshots advance
+        # into a future round before that round's scheduled ET date. This is
+        # especially important after R2, when the endpoint can remain frozen
+        # overnight and otherwise looks like R3/R4 completed instantly.
+        start_str = _state.get("tournament_start_date")
+        if start_str:
+            start_date = _parse_date(start_str).date()
+            today_et   = datetime.now(ZoneInfo("America/New_York")).date()
+            earliest_round_date = start_date + timedelta(days=max(round_num - 1, 0))
+            if today_et < earliest_round_date:
+                log.warning(
+                    "Round-complete guard blocked R%d completion: today ET %s < earliest %s",
+                    round_num, today_et, earliest_round_date,
+                )
+                _log_event("round_complete_blocked_future_date",
+                           round=round_num, today_et=str(today_et),
+                           earliest=str(earliest_round_date))
+                _save_state(_state)
+                return
         _state["mode"]             = "between_rounds"
         _state["completed_rounds"] = round_num
         _save_state(_state)
