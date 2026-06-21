@@ -201,6 +201,54 @@ def _detect_round_complete(live_data: dict) -> tuple[bool, int]:
     return pct_finished >= 0.90, round_num
 
 
+def _round_completion_too_early(round_num: int) -> bool:
+    """Return True if tee times make a completed-round signal impossible.
+
+    DataGolf's live-tournament-stats endpoint can serve stale all-18 snapshots
+    overnight. Date guards alone are not enough on the next tournament day,
+    especially before the final round starts. Use the latest tee time for the
+    expected round as a sanity check before accepting an all-finished feed.
+    """
+    try:
+        field = _get_dg_field(_state.get("event_slug", ""))
+        tee_times: list[datetime] = []
+        for player in field:
+            for tee in (player.get("teetimes") or []):
+                if int(tee.get("round_num") or 0) != int(round_num):
+                    continue
+                raw = tee.get("teetime")
+                if not raw:
+                    continue
+                tee_times.append(
+                    datetime.strptime(str(raw), "%Y-%m-%d %H:%M").replace(
+                        tzinfo=ZoneInfo("America/New_York")
+                    )
+                )
+        if not tee_times:
+            return False
+
+        # A round cannot be complete until well after the final pairing starts.
+        # 3.5h is intentionally conservative: it blocks stale overnight/morning
+        # feeds without waiting for a normal late-afternoon finish.
+        earliest_plausible_completion = max(tee_times) + timedelta(hours=3, minutes=30)
+        now_et = datetime.now(ZoneInfo("America/New_York"))
+        if now_et < earliest_plausible_completion:
+            log.warning(
+                "Round-complete guard blocked R%d: now ET %s < latest tee + 3.5h %s",
+                round_num, now_et, earliest_plausible_completion,
+            )
+            _log_event(
+                "round_complete_blocked_tee_time",
+                round=round_num,
+                now_et=now_et.isoformat(),
+                earliest=earliest_plausible_completion.isoformat(),
+            )
+            return True
+    except Exception as e:
+        log.warning("Round-complete tee-time guard failed open: %s", e)
+    return False
+
+
 def _field_fingerprint(live_data: dict) -> str:
     """Hash of current SG totals + thru values — changes when play resumes."""
     players = (live_data.get("live_stats") or live_data.get("rankings") or
@@ -892,6 +940,9 @@ def _tick_in_round(now: float) -> None:
                            earliest=str(earliest_round_date))
                 _save_state(_state)
                 return
+        if _round_completion_too_early(round_num):
+            _save_state(_state)
+            return
         _state["mode"]             = "between_rounds"
         _state["completed_rounds"] = round_num
         _save_state(_state)
