@@ -80,7 +80,7 @@ lmer_formula <- sg_residual ~ player_skill_prior + player_skill_prior_decay +
   sg_arg_r1 + sg_arg_r2 + sg_arg_r3 +
   sg_putt_r1 + sg_putt_r2 + sg_putt_r3 +
   form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 +
-  form_residual_mean_8 + form_residual_slope_8 +
+  form_residual_mean_4 + form_residual_mean_8 + form_residual_slope_8 +
   wind_speed_tee + wind_dir_tee + temp_tee + precip_tee + weather_precision +
   (1 + form_residual_mean_8 | player_id) + (1 | course_id)
 
@@ -122,7 +122,7 @@ brms_formula <- bf(
     sg_app_r1 + sg_app_r2 + sg_app_r3 +
     sg_arg_r1 + sg_arg_r2 + sg_arg_r3 +
     sg_putt_r1 + sg_putt_r2 + sg_putt_r3 +
-    form_residual_mean_8 + form_residual_slope_8 +
+    form_residual_mean_4 + form_residual_mean_8 + form_residual_slope_8 +
     form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 +
     wind_speed_tee + wind_dir_tee + temp_tee + precip_tee + weather_precision +
     (1 | player_id) + (1 | course_id)
@@ -140,7 +140,7 @@ brms_formula_full <- bf(
     sg_app_r1 + sg_app_r2 + sg_app_r3 +
     sg_arg_r1 + sg_arg_r2 + sg_arg_r3 +
     sg_putt_r1 + sg_putt_r2 + sg_putt_r3 +
-    form_residual_mean_8 + form_residual_slope_8 +
+    form_residual_mean_4 + form_residual_mean_8 + form_residual_slope_8 +
     form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 +
     wind_speed_tee + wind_dir_tee + temp_tee + precip_tee + weather_precision +
     (1 | player_id) +        # population-level player intercept
@@ -177,7 +177,7 @@ prep_for_lme <- function(df, ref_df = NULL) {
                   "n_prior_rounds", "course_fit_score",
                   "sg_ott_prior", "sg_app_prior",
                   "sg_arg_prior", "sg_putt_prior",
-                  "form_residual_mean_8", "form_residual_slope_8",
+                  "form_residual_mean_4", "form_residual_mean_8", "form_residual_slope_8",
                   "sg_r1", "sg_r2", "sg_r3",
                   "sg_ott_r1", "sg_ott_r2", "sg_ott_r3",
                   "sg_app_r1", "sg_app_r2", "sg_app_r3",
