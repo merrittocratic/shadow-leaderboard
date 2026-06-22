@@ -283,10 +283,16 @@ enforce_contract <- function(df, tournament, year) {
   if (top10_sum < 9.0 || top10_sum > 11.0) {
     stop(sprintf("pred_top10_prob sums to %.3f, expected ~10.0", top10_sum))
   }
-  finish_coverage <- mean(!is.na(df$actual_finish_position))
-  if (finish_coverage < 0.70) {
-    stop(sprintf("only %.0f%% of field has actuals — likely a join bug or stale cache",
-                 100 * finish_coverage))
+  cut_rate <- mean(df$actual_made_cut)
+  if (cut_rate < 0.15) {
+    stop(sprintf("cut rate %.0f%% — likely a join bug (nearly everyone appears as non-cut)",
+                 100 * cut_rate))
+  }
+  cutmakers <- df$actual_made_cut
+  finish_coverage_cutmakers <- if (any(cutmakers)) mean(!is.na(df$actual_finish_position[cutmakers])) else 0
+  if (finish_coverage_cutmakers < 0.85) {
+    stop(sprintf("only %.0f%% of cut-makers have a finish position — likely a fin_text parsing bug",
+                 100 * finish_coverage_cutmakers))
   }
   if (!all(df$course_type %in% ALLOWED_COURSE_TYPES)) {
     stop("unknown course_type values: ",
