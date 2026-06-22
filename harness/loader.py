@@ -37,6 +37,10 @@ def load_eval_table(tournament: str, year: int) -> pd.DataFrame:
 
     df = pd.read_parquet(path)
 
+    # R's arrow writes as.integer() as int32; cast to int64 before schema check.
+    if "player_id" in df.columns and str(df["player_id"].dtype) == "int32":
+        df["player_id"] = df["player_id"].astype("int64")
+
     missing = set(EXPECTED_SCHEMA) - set(df.columns)
     if missing:
         raise ValueError(f"missing columns: {sorted(missing)}")
@@ -49,8 +53,8 @@ def load_eval_table(tournament: str, year: int) -> pd.DataFrame:
             raise ValueError(f"{col} has nulls but is non-nullable")
 
     n = len(df)
-    if not (100 <= n <= 200):
-        raise ValueError(f"field size {n} is suspicious for a major")
+    if not (50 <= n <= 250):
+        raise ValueError(f"field size {n} is outside expected range 50-250")
     if df["player_id"].duplicated().any():
         raise ValueError("duplicate player_id")
 
@@ -62,11 +66,21 @@ def load_eval_table(tournament: str, year: int) -> pd.DataFrame:
     if not (9.0 <= top10_sum <= 11.0):
         raise ValueError(f"pred_top10_prob sums to {top10_sum:.3f}, expected ~10.0")
 
-    finish_coverage = df["actual_finish_position"].notna().mean()
-    if finish_coverage < 0.70:
+    # finish_position is intentionally NA for missed-cut players; check cut rate
+    # and finish coverage among cut-makers instead of raw field coverage.
+    cut_rate = df["actual_made_cut"].mean()
+    if cut_rate < 0.15:
         raise ValueError(
-            f"only {finish_coverage:.0%} of field has actuals — likely a join bug"
+            f"cut rate {cut_rate:.0%} — likely a join bug (nearly everyone appears as non-cut)"
         )
+    cutmakers = df["actual_made_cut"]
+    if cutmakers.any():
+        finish_coverage_cutmakers = df.loc[cutmakers, "actual_finish_position"].notna().mean()
+        if finish_coverage_cutmakers < 0.85:
+            raise ValueError(
+                f"only {finish_coverage_cutmakers:.0%} of cut-makers have a finish position"
+                " — likely a fin_text parsing bug"
+            )
 
     return df
 

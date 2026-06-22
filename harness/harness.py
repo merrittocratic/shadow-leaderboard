@@ -1,12 +1,13 @@
 import argparse
 import json
 import sys
+from datetime import date
 
-import anthropic
+from openai import OpenAI
 
 from tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
-DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MODEL = "gpt-5.4"
 MAX_TOOL_TURNS = 15
 
 SYSTEM_PROMPT = """\
@@ -16,7 +17,7 @@ You are a diagnostic analyst for a golf tournament prediction model. The user is
 
 - Each tool call should be motivated by what you just learned, not by a fixed checklist. If headline metrics show the model is broadly competitive, don't waste a call on the obvious next slice — go to where the result was surprising.
 - A good diagnostic run is typically 4-7 tool calls. If you're past 10, you've stopped probing and started dumping.
-- When a slice reveals weakness, follow it: `slice → calibration → residuals → baseline comparison` is a natural chain. When a slice reveals nothing, abandon it and try a different dimension.
+- When a slice reveals weakness, follow it: `slice -> calibration -> residuals -> baseline comparison` is a natural chain. When a slice reveals nothing, abandon it and try a different dimension.
 - Quote specific numbers in your reasoning. "Brier on favorites was 0.041 vs. 0.022 on longshots" is useful; "the model struggles with favorites" without numbers is not.
 - Name specific players when residuals or baseline comparisons surface them. "Scheffler and Rahm both underperformed their high win-probs" is the right grain of detail.
 
@@ -27,13 +28,13 @@ A single tournament is a small sample. Eighteen favorites in one event is not en
 ## What golf model failures actually look like
 
 Keep these patterns in mind as hypotheses to test, not assumptions:
-- **Favorite overconfidence.** Top players get higher win probs than they achieve. The top calibration bucket's actual rate falls below its predicted rate.
-- **Course archetype miss.** The model handles courses similar to its training distribution but degrades on unusual setups — links, desert, narrow fairways, extreme rough.
-- **Baseline-specific gaps.** Losing to OWGR means losing on rank ordering. Losing to DataGolf usually means losing on calibration. Losing to Vegas means losing to information you don't have (sharp money sees things models don't).
+- Favorite overconfidence. Top players get higher win probs than they achieve. The top calibration bucket's actual rate falls below its predicted rate.
+- Course archetype miss. The model handles courses similar to its training distribution but degrades on unusual setups -- links, desert, narrow fairways, extreme rough.
+- Baseline-specific gaps. Losing to OWGR means losing on rank ordering. Losing to DataGolf usually means losing on calibration. Losing to Vegas means losing to information you don't have (sharp money sees things models don't).
 
 ## Output
 
-End with a written diagnosis — 3-5 sentences — that answers: where is the model strong, where is it weak, and what's the one most actionable thing to investigate next. Do not summarize what you did; the user can see the tool calls.
+End with a written diagnosis -- 3-5 sentences -- that answers: where is the model strong, where is it weak, and what's the one most actionable thing to investigate next. Do not summarize what you did; the user can see the tool calls.
 
 ## Stop conditions
 
@@ -41,10 +42,18 @@ You're done when you can answer the diagnostic question with specifics. You do n
 """
 
 
-def _cached_tools(schemas: list[dict]) -> list[dict]:
-    """Mark the last tool schema with cache_control so system + all tools cache together."""
-    out = [dict(s) for s in schemas]
-    out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+def _openai_tools(schemas: list[dict]) -> list[dict]:
+    """Convert Anthropic-format tool schemas to OpenAI function-calling format."""
+    out = []
+    for s in schemas:
+        out.append({
+            "type": "function",
+            "function": {
+                "name": s["name"],
+                "description": s["description"],
+                "parameters": s.get("input_schema", {"type": "object", "properties": {}, "required": []}),
+            },
+        })
     return out
 
 
@@ -57,55 +66,48 @@ def _execute_tool(name: str, inputs: dict) -> str:
 
 
 def run_eval(prompt: str, model: str = DEFAULT_MODEL, verbose: bool = True) -> str:
-    client = anthropic.Anthropic()
-    messages: list[dict] = [{"role": "user", "content": prompt}]
-
-    system_blocks = [{
-        "type": "text",
-        "text": SYSTEM_PROMPT,
-        "cache_control": {"type": "ephemeral"},
-    }]
-    tools = _cached_tools(TOOL_SCHEMAS)
+    client = OpenAI()
+    tools = _openai_tools(TOOL_SCHEMAS)
+    today = date.today().isoformat()
+    messages: list[dict] = [
+        {"role": "system", "content": f"Today's date: {today}\n\n{SYSTEM_PROMPT}"},
+        {"role": "user", "content": prompt},
+    ]
 
     for turn in range(MAX_TOOL_TURNS):
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=model,
             max_tokens=4096,
-            system=system_blocks,
             tools=tools,
             messages=messages,
         )
 
+        choice = response.choices[0]
         if verbose:
             usage = response.usage
             print(
-                f"[turn {turn + 1}] stop={response.stop_reason} "
-                f"in={usage.input_tokens} out={usage.output_tokens} "
-                f"cache_read={getattr(usage, 'cache_read_input_tokens', 0)} "
-                f"cache_write={getattr(usage, 'cache_creation_input_tokens', 0)}",
+                f"[turn {turn + 1}] stop={choice.finish_reason} "
+                f"in={usage.prompt_tokens} out={usage.completion_tokens}",
                 file=sys.stderr,
             )
 
-        if response.stop_reason != "tool_use":
-            text_blocks = [b.text for b in response.content if b.type == "text"]
-            return "\n".join(text_blocks).strip()
+        if choice.finish_reason != "tool_calls":
+            return (choice.message.content or "").strip()
 
-        messages.append({"role": "assistant", "content": response.content})
+        messages.append(choice.message)
 
-        tool_results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
+        for tc in choice.message.tool_calls:
             if verbose:
-                print(f"  → {block.name}({json.dumps(block.input)})", file=sys.stderr)
-            result = _execute_tool(block.name, block.input)
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
+                print(f"  -> {tc.function.name}({tc.function.arguments})", file=sys.stderr)
+            inputs = json.loads(tc.function.arguments)
+            result = _execute_tool(tc.function.name, inputs)
+            if verbose:
+                print(f"     result: {result[:300]}", file=sys.stderr)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
                 "content": result,
             })
-
-        messages.append({"role": "user", "content": tool_results})
 
     raise RuntimeError(f"hit MAX_TOOL_TURNS={MAX_TOOL_TURNS} without final response")
 

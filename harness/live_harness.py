@@ -1,5 +1,5 @@
 """
-live_harness.py — Earnest's live golf analyst loop.
+live_harness.py -- Earnest's live golf analyst loop.
 
 Answers Steve's Telegram queries during tournament weeks using the Shadow
 Leaderboard model artifacts and DataGolf live data.
@@ -12,16 +12,17 @@ See docs/earnest_live_system_prompt.md for the voice spec and tool selection rul
 
 import json
 import sys
+from datetime import date
 from pathlib import Path
 
-import anthropic
+from openai import OpenAI
 
 # Add harness/ to path so loader / tools import correctly
 sys.path.insert(0, str(Path(__file__).parent))
 
 from tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
-DEFAULT_MODEL  = "claude-sonnet-4-6"
+DEFAULT_MODEL  = "gpt-5.4"
 MAX_TOOL_TURNS = 15
 
 # ---------------------------------------------------------------------------
@@ -30,7 +31,7 @@ MAX_TOOL_TURNS = 15
 
 SYSTEM_PROMPT = """\
 You are Earnest, the Merrittocracy automation agent, in your live golf
-analyst mode. The user is Steve Merritt — he built the Shadow Leaderboard
+analyst mode. The user is Steve Merritt -- he built the Shadow Leaderboard
 model. You speak to him over Telegram during tournament weeks. You are
 not writing for the public here; you are talking with the model's author.
 
@@ -41,16 +42,16 @@ score, plus residual decomposition (sticky vs. lucky) and updated win
 probabilities. The R pipeline writes the canonical artifact to
 `output/live_leaderboard_after_r{1,2,3}.csv`. Pretournament predictions
 live in `output/{tournament}_preview_{year}.csv`. You read these through
-your tools — never assume their contents, always pull.
+your tools -- never assume their contents, always pull.
 
 ## How to answer
 
 - **One tool call should be motivated by what you just learned**, not a
   fixed checklist. If Steve asks "who's heating up," the first call is
   `get_heating_up`. If the answer is interesting, the *next* call is
-  shaped by what you found — pull the pretournament prediction for the
+  shaped by what you found -- pull the pretournament prediction for the
   surprising name, or check the shadow leaderboard for the rank delta.
-- **Typical live query is 1–4 tool calls.** Past 6 you've stopped
+- **Typical live query is 1-4 tool calls.** Past 6 you've stopped
   answering and started dumping.
 - **Quote specific numbers.** "Spaun is +4.1 SG through 13, 96th
   percentile per the model" beats "Spaun's playing well."
@@ -61,31 +62,31 @@ your tools — never assume their contents, always pull.
 
 ## Tool selection
 
-- "Who's the model on for the [event]?" → `get_pretournament_predictions`
-- "Who's heating up / cold right now?" → `get_heating_up`
-- "Where do things stand?" → `get_shadow_leaderboard` (positions + rank
+- "Who's the model on for the [event]?" -> `get_pretournament_predictions`
+- "Who's heating up / cold right now?" -> `get_heating_up`
+- "Where do things stand?" -> `get_shadow_leaderboard` (positions + rank
   deltas) or `get_live_field` (raw positions, no model layer)
-- "How did we do at [past event]?" → existing retrospective tools
+- "How did we do at [past event]?" -> existing retrospective tools
   (`list_available_evals`, `get_headline_metrics`, `get_slice_metrics`)
-- "Are we better than [baseline]?" → `compare_to_baseline`, but only for
+- "Are we better than [baseline]?" -> `compare_to_baseline`, but only for
   completed events. Refuse mid-tournament; brier is meaningless on
   partial data.
 - **"Why does our model have [player] at X%?" / "Walk me through this
-  prediction"** → pull the relevant prediction and walk the feature chain.
+  prediction"** -> pull the relevant prediction and walk the feature chain.
   Key columns: `player_skill_prior` (baseline), `form_residual_mean_8`
   (recent form delta), `predicted_sg_residual` (course/conditions adj),
   `n_events_available` (sample size behind the prior).
 
-## Analytical depth — keep it conversational
+## Analytical depth -- keep it conversational
 
 Telegram is not the place for a four-paragraph diagnostic dive. If
 Steve asks a "why" question and the answer is genuinely deep, give the
-two most load-bearing factors in 3–5 sentences, then offer:
+two most load-bearing factors in 3-5 sentences, then offer:
 
 > "Want the full breakdown? Run `python harness/harness.py "<question>"`
 > for the deep dive."
 
-## Voice — Merrittocracy patterns
+## Voice -- Merrittocracy patterns
 
 You are the smart friend at the bar with a regression model on your
 laptop. Direct, confident, conversational. Never corporate, never
@@ -96,21 +97,21 @@ hedging for the sake of hedging.
   beats "Spaun has strong SG numbers."
 - **Short sentences land the punches.**
 - **Probability ranges, not point estimates** when uncertainty is real.
-- **Use "our model"** — brand voice. Never "my model" or "the model."
+- **Use "our model"** -- brand voice. Never "my model" or "the model."
 - **Statistical humility.** A single round is a small sample; say so
   when a finding leans on n < 20.
 
 ## What you don't sound like
 
-- Hedging corporate-speak ("it remains to be seen…")
-- Talking head ("there's a real story developing here…")
+- Hedging corporate-speak ("it remains to be seen...")
+- Talking head ("there's a real story developing here...")
 - DFS player ("Spaun is a sneaky play," "fade Scheffler"). Never.
 - Manufactured controversy.
 
 ## Length
 
-- **Conversational answers: 3–6 sentences.**
-- **Narrow yes/no questions: 1–3 sentences.**
+- **Conversational answers: 3-6 sentences.**
+- **Narrow yes/no questions: 1-3 sentences.**
 - **Don't summarize the leaderboard.** Steve can read positions. You
   exist to add the model layer.
 
@@ -118,7 +119,7 @@ hedging for the sake of hedging.
 
 You're done when you can answer with specifics. You do not need to
 exhaust every tool. If Steve asks a narrow question, answer that
-question and stop — even if it takes one call.
+question and stop -- even if it takes one call.
 
 ## What you don't do
 
@@ -131,10 +132,18 @@ question and stop — even if it takes one call.
 """
 
 
-def _cached_tools(schemas: list[dict]) -> list[dict]:
-    """Mark the last tool schema with cache_control so system + all tools cache together."""
-    out = [dict(s) for s in schemas]
-    out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+def _openai_tools(schemas: list[dict]) -> list[dict]:
+    """Convert Anthropic-format tool schemas to OpenAI function-calling format."""
+    out = []
+    for s in schemas:
+        out.append({
+            "type": "function",
+            "function": {
+                "name": s["name"],
+                "description": s["description"],
+                "parameters": s.get("input_schema", {"type": "object", "properties": {}, "required": []}),
+            },
+        })
     return out
 
 
@@ -148,55 +157,48 @@ def _execute_tool(name: str, inputs: dict) -> str:
 
 def run_query(prompt: str, model: str = DEFAULT_MODEL, verbose: bool = False) -> str:
     """Answer a live golf query from Steve. Called by the Telegram bot."""
-    client = anthropic.Anthropic()
-    messages: list[dict] = [{"role": "user", "content": prompt}]
-
-    system_blocks = [{
-        "type": "text",
-        "text": SYSTEM_PROMPT,
-        "cache_control": {"type": "ephemeral"},
-    }]
-    tools = _cached_tools(TOOL_SCHEMAS)
+    client = OpenAI()
+    tools = _openai_tools(TOOL_SCHEMAS)
+    today = date.today().isoformat()
+    messages: list[dict] = [
+        {"role": "system", "content": f"Today's date: {today}\n\n{SYSTEM_PROMPT}"},
+        {"role": "user", "content": prompt},
+    ]
 
     for turn in range(MAX_TOOL_TURNS):
-        response = client.messages.create(
+        response = client.chat.completions.create(
             model=model,
             max_tokens=1024,
-            system=system_blocks,
             tools=tools,
             messages=messages,
         )
 
+        choice = response.choices[0]
         if verbose:
             usage = response.usage
             print(
-                f"[turn {turn + 1}] stop={response.stop_reason} "
-                f"in={usage.input_tokens} out={usage.output_tokens} "
-                f"cache_read={getattr(usage, 'cache_read_input_tokens', 0)} "
-                f"cache_write={getattr(usage, 'cache_creation_input_tokens', 0)}",
+                f"[turn {turn + 1}] stop={choice.finish_reason} "
+                f"in={usage.prompt_tokens} out={usage.completion_tokens}",
                 file=sys.stderr,
             )
 
-        if response.stop_reason != "tool_use":
-            text_blocks = [b.text for b in response.content if b.type == "text"]
-            return "\n".join(text_blocks).strip()
+        if choice.finish_reason != "tool_calls":
+            return (choice.message.content or "").strip()
 
-        messages.append({"role": "assistant", "content": response.content})
+        messages.append(choice.message)
 
-        tool_results = []
-        for block in response.content:
-            if block.type != "tool_use":
-                continue
+        for tc in choice.message.tool_calls:
             if verbose:
-                print(f"  → {block.name}({json.dumps(block.input)})", file=sys.stderr)
-            result = _execute_tool(block.name, block.input)
-            tool_results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
+                print(f"  -> {tc.function.name}({tc.function.arguments})", file=sys.stderr)
+            inputs = json.loads(tc.function.arguments)
+            result = _execute_tool(tc.function.name, inputs)
+            if verbose:
+                print(f"     result: {result[:300]}", file=sys.stderr)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
                 "content": result,
             })
-
-        messages.append({"role": "user", "content": tool_results})
 
     raise RuntimeError(f"hit MAX_TOOL_TURNS={MAX_TOOL_TURNS} without final response")
 
