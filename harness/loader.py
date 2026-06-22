@@ -37,9 +37,16 @@ def load_eval_table(tournament: str, year: int) -> pd.DataFrame:
 
     df = pd.read_parquet(path)
 
-    # R's arrow writes as.integer() as int32; cast to int64 before schema check.
-    if "player_id" in df.columns and str(df["player_id"].dtype) == "int32":
-        df["player_id"] = df["player_id"].astype("int64")
+    # Newer pandas/pyarrow returns string columns as dtype "str" or "string"
+    # instead of "object", and int32 instead of int64. Coerce before schema check.
+    for col, (expected_dtype, _) in EXPECTED_SCHEMA.items():
+        if col not in df.columns:
+            continue
+        actual = str(df[col].dtype)
+        if expected_dtype == "object" and actual != "object":
+            df[col] = df[col].astype("object")
+        elif expected_dtype == "int64" and actual == "int32":
+            df[col] = df[col].astype("int64")
 
     missing = set(EXPECTED_SCHEMA) - set(df.columns)
     if missing:
