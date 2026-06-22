@@ -37,25 +37,19 @@ def load_eval_table(tournament: str, year: int) -> pd.DataFrame:
 
     df = pd.read_parquet(path)
 
-    # Newer pandas/pyarrow returns string columns as dtype "str" or "string"
-    # instead of "object", and int32 instead of int64. Coerce before schema check.
-    for col, (expected_dtype, _) in EXPECTED_SCHEMA.items():
-        if col not in df.columns:
-            continue
-        actual = str(df[col].dtype)
-        if expected_dtype == "object" and actual != "object":
-            df[col] = df[col].astype("object")
-        elif expected_dtype == "int64" and actual == "int32":
-            df[col] = df[col].astype("int64")
-
     missing = set(EXPECTED_SCHEMA) - set(df.columns)
     if missing:
         raise ValueError(f"missing columns: {sorted(missing)}")
 
+    # Coerce each column to its expected dtype rather than strict-checking.
+    # pandas/pyarrow dtype names vary by version (e.g. "str" vs "object",
+    # "float64" vs "float64[pyarrow]", nullable int as "float64" when NAs present).
     for col, (dtype, nullable) in EXPECTED_SCHEMA.items():
-        actual = str(df[col].dtype)
-        if actual != dtype:
-            raise ValueError(f"{col}: expected dtype {dtype}, got {actual}")
+        if str(df[col].dtype) != dtype:
+            try:
+                df[col] = df[col].astype(dtype)
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"{col}: cannot coerce {df[col].dtype} to {dtype}: {e}") from e
         if not nullable and df[col].isna().any():
             raise ValueError(f"{col} has nulls but is non-nullable")
 
