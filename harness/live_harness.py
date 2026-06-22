@@ -168,7 +168,7 @@ def run_query(prompt: str, model: str = DEFAULT_MODEL, verbose: bool = False) ->
     for turn in range(MAX_TOOL_TURNS):
         response = client.chat.completions.create(
             model=model,
-            max_tokens=1024,
+            max_completion_tokens=1024,
             tools=tools,
             messages=messages,
         )

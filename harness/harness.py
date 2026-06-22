@@ -77,7 +77,7 @@ def run_eval(prompt: str, model: str = DEFAULT_MODEL, verbose: bool = True) -> s
     for turn in range(MAX_TOOL_TURNS):
         response = client.chat.completions.create(
             model=model,
-            max_tokens=4096,
+            max_completion_tokens=4096,
             tools=tools,
             messages=messages,
         )
