@@ -24,7 +24,7 @@ source(here("R", "datagolf_api.R"))
 
 # Convert a tournament slug back to a grep-friendly pattern
 # "memorial_tournament" -> "memorial tournament"
-.slug_pattern <- function(slug) gsub("_", " ", slug)
+.slug_pattern <- function(slug) gsub("_", "[^a-z0-9]+", slug)
 
 # Find the matching event in a historical data list by slug
 .find_event <- function(hist, tournament) {
