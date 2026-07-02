@@ -8,7 +8,7 @@
 # Usage:
 #   source("R/00_config.R")
 #   source("R/odds_api.R")
-#   snap <- fetch_odds_snapshot("us_open", 2026)
+#   snap <- fetch_odds_snapshot("u_s_open", 2026)
 
 ODDS_API_BASE <- "https://api.the-odds-api.com/v4"
 
@@ -19,11 +19,14 @@ if (nchar(ODDS_API_KEY) == 0) {
   ))
 }
 
-# DG slug -> Odds API sport key (majors only; non-majors silently return NULL)
+# DG slug -> Odds API sport key (majors only; non-majors silently return NULL).
+# Keys must match TOURNAMENT_SLUG as auto-derived by 07_pga_preview.R
+# (lowercase, non-alphanumeric -> "_"): "U.S. Open" -> "u_s_open",
+# "Masters Tournament" -> "masters_tournament".
 .ODDS_SPORT_KEYS <- c(
-  "masters"               = "golf_masters_tournament_winner",
+  "masters_tournament"    = "golf_masters_tournament_winner",
   "pga_championship"      = "golf_pga_championship",
-  "us_open"               = "golf_us_open_winner",
+  "u_s_open"              = "golf_us_open_winner",
   "the_open_championship" = "golf_the_open_championship"
 )
 
@@ -62,7 +65,7 @@ if (nchar(ODDS_API_KEY) == 0) {
 #' Saves to output/eval/odds_<slug>_<year>.rds alongside the other eval
 #' artifacts. Call this at the end of 07_pga_preview.R.
 #'
-#' @param slug  DG tournament slug (e.g. "us_open").
+#' @param slug  DG tournament slug (e.g. "u_s_open").
 #' @param year  Integer year.
 #' @param force_refresh  Bypass on-disk cache and re-fetch.
 #'
