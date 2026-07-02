@@ -529,21 +529,31 @@ if (file.exists(stack_model_file)) {
   N_DRAWS          <- 2000L
   remaining_rounds <- 4L - completed_round
 
-  # posterior_predict returns sg_residual samples (deviation above player's own
-  # baseline). player_skill_prior must be added to each future round's draws
-  # before anchoring to actual_total_sg (which is already absolute SG).
+  # Each posterior draw is one simulated finish: the player's expected residual
+  # (posterior_epred: parameter + player-RE uncertainty) persists across all
+  # remaining rounds, while observation noise (sigma) is drawn fresh per round.
+  # player_skill_prior must be added to each future round before anchoring to
+  # actual_total_sg (which is already absolute SG).
   skill_priors <- score_frame_brms$player_skill_prior
 
   future_sg <- if (remaining_rounds > 0L) {
-    Reduce("+", lapply(seq_len(remaining_rounds), function(r) {
-      draws <- posterior_predict(
-        brms_stack,
-        newdata          = score_frame_brms,
-        ndraws           = N_DRAWS,
-        allow_new_levels = TRUE
-      )
-      sweep(draws, 2, skill_priors, "+")
-    }))
+    n_sim    <- min(N_DRAWS, ndraws(brms_stack))
+    draw_ids <- round(seq(1L, ndraws(brms_stack), length.out = n_sim))
+    mu_draws <- posterior_epred(
+      brms_stack,
+      newdata          = score_frame_brms,
+      draw_ids         = draw_ids,
+      allow_new_levels = TRUE
+    )
+    sigma_draws <- as.matrix(brms_stack, variable = "sigma")[draw_ids, 1]
+
+    # R independent N(0, sigma) rounds sum to N(0, sqrt(R) * sigma); sd vector
+    # of length N_DRAWS recycles down each column (per-draw sigma)
+    round_noise <- matrix(
+      rnorm(n_sim * ncol(mu_draws), sd = sqrt(remaining_rounds) * sigma_draws),
+      nrow = n_sim
+    )
+    remaining_rounds * sweep(mu_draws, 2, skill_priors, "+") + round_noise
   } else {
     matrix(0, nrow = N_DRAWS, ncol = nrow(score_frame_brms))
   }

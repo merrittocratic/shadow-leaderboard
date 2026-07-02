@@ -397,20 +397,34 @@ if (file.exists(stack_model_file)) {
 
   N_DRAWS <- 2000L
 
-  # posterior_predict returns sg_residual samples (deviation above player's own
-  # baseline). player_skill_prior must be added back before ranking so that a
-  # club pro +2 above their -4.8 baseline loses to a tour pro +1 above +1.2.
+  # Each posterior draw is one simulated tournament: the player's expected
+  # residual (posterior_epred: parameter + player-RE uncertainty) persists
+  # across all 4 rounds, while observation noise (sigma) is drawn fresh per
+  # round. Summing independent posterior_predict calls per round would let
+  # skill uncertainty average out across rounds, sharpening totals around
+  # the point estimate. player_skill_prior must be added back before ranking
+  # so that a club pro +2 above their -4.8 baseline loses to a tour pro +1
+  # above +1.2.
   skill_priors <- score_frame_brms$player_skill_prior
 
-  tournament_totals <- Reduce("+", lapply(seq_len(4L), function(r) {
-    draws <- posterior_predict(
-      brms_stack,
-      newdata          = score_frame_brms,
-      ndraws           = N_DRAWS,
-      allow_new_levels = TRUE
-    )
-    sweep(draws, 2, skill_priors, "+")
-  }))  # [N_DRAWS x n_players], units: sg_total above field average
+  n_sim    <- min(N_DRAWS, ndraws(brms_stack))
+  draw_ids <- round(seq(1L, ndraws(brms_stack), length.out = n_sim))
+  mu_draws <- posterior_epred(
+    brms_stack,
+    newdata          = score_frame_brms,
+    draw_ids         = draw_ids,
+    allow_new_levels = TRUE
+  )
+  sigma_draws <- as.matrix(brms_stack, variable = "sigma")[draw_ids, 1]
+
+  # round noise: 4 independent N(0, sigma) rounds sum to N(0, 2 * sigma);
+  # sd vector of length N_DRAWS recycles down each column (per-draw sigma)
+  round_noise <- matrix(
+    rnorm(n_sim * ncol(mu_draws), sd = 2 * sigma_draws),
+    nrow = n_sim
+  )
+  tournament_totals <- 4 * sweep(mu_draws, 2, skill_priors, "+") + round_noise
+  # [N_DRAWS x n_players], units: sg_total above field average
 
   ranks_mat  <- t(apply(tournament_totals, 1, function(row) rank(-row, ties.method = "random")))
   win_prob   <- colMeans(ranks_mat == 1L)
