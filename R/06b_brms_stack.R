@@ -147,14 +147,16 @@ cli_alert_info(
 #     Net effect: training estimate was suppressed without production benefit.
 # Keeping (1|player_id) — captures player-level heterogeneity for known players,
 # shrinks new players toward the population intercept.
-# Prior on gbdt_pred re-centered at 0.8 (within-player slope from lme4 ablation).
+# Prior on gbdt_pred centered at 1.0: three consecutive stack fits put the
+# posterior at 1.01 [0.98, 1.04]; the old 0.8 center (within-player slope from
+# lme4 ablation) only added sampler tension without moving the estimate.
 
 brms_formula_stack <- bf(
   sg_residual ~ gbdt_pred + (1 | player_id)
 )
 
 brms_priors_stack <- c(
-  prior(normal(0.8, 0.2), class = b,          coef = gbdt_pred),
+  prior(normal(1.0, 0.2), class = b,          coef = gbdt_pred),
   prior(normal(0, 0.5),   class = Intercept),
   prior(normal(0, 0.5),   class = sd,         group = player_id),
   prior(exponential(1),   class = sigma)
