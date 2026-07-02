@@ -4,10 +4,10 @@ source("R/odds_api.R")
 source("R/03_model_spec.R")
 source("R/weather_forecast.R")
 
-# US Open 2026 pre-tournament ranked table.
-# Uses the PGA Championship field as a proxy for the US Open field (the full
-# US Open field is not yet available from DataGolf). Course overridden to
-# Shinnecock Hills; weather pulled from the Open-Meteo 16-day forecast.
+# US Open 2026 pre-tournament ranked table, retrospectively re-runnable:
+# actual field from 2026 historical data, form features cut off at
+# TOURNAMENT_START_DATE. Course overridden to Shinnecock Hills; weather
+# pulled from the Open-Meteo forecast endpoint.
 #
 # Run this after 05_tune.R and 06b_brms_stack.R have completed.
 # If the LIV calibration pipeline (02e -> 04 -> 05 -> 06b) was re-run after
@@ -20,7 +20,7 @@ library(gt)
 
 source("tests/test_form_features.R")
 
-cli_h1("US Open 2026 -- pre-tournament ranked table (PGA Championship proxy field)")
+cli_h1("US Open 2026 -- pre-tournament ranked table (actual field, point-in-time)")
 
 # ---- Course / tournament constants ----------------------------------------
 # Shinnecock Hills, course_num 618, links/penal archetype, style-only weights.
@@ -120,19 +120,26 @@ rounds_2026 <- purrr::map_dfr(data_2026, flatten_event_simple) |>
     round_num = as.integer(round_num)
   )
 
-# ---- Extract PGA Championship field from 2026 historical data -------------
+# ---- Extract US Open field from 2026 historical data ----------------------
+# Originally (pre-tournament, June 11) this used PGA Championship participants
+# as a proxy because the US Open field was not yet posted. Retrospective
+# re-runs must use the actual field: a proxy field breaks eval comparability
+# (only ~85 of the proxy's 156 players played the US Open) and distorts every
+# baseline Brier denominator. Field membership is known pre-tournament, so
+# using the historical participant list is point-in-time safe; form features
+# remain cut off at TOURNAMENT_START_DATE.
 
 field_players <- rounds_2026 |>
-  filter(str_detect(event_name, regex("pga championship", ignore_case = TRUE))) |>
+  filter(str_detect(event_name, regex("^u\\.?s\\.? open$", ignore_case = TRUE))) |>
   distinct(dg_id, player_name) |>
   mutate(dg_id = as.integer(dg_id))
 
 if (nrow(field_players) == 0) {
-  cli_abort("No PGA Championship rounds found in 2026 data. Check event_name values in rounds_2026.")
+  cli_abort("No U.S. Open rounds found in 2026 data. Check event_name values in rounds_2026.")
 }
 
 cli_alert_success(
-  "Proxy field: {nrow(field_players)} players from PGA Championship 2026 (actual participants)"
+  "Field: {nrow(field_players)} players from U.S. Open 2026 (actual participants)"
 )
 
 # ---- Skill priors from training set (2025 year-end) -----------------------
@@ -370,10 +377,7 @@ cli_alert_success("Eval snapshot saved")
 
 fetch_odds_snapshot(TOURNAMENT_SLUG, TOURNAMENT_YEAR)
 
-cli_h2("Top 20 -- US Open 2026 proxy (Shinnecock Hills, {toupper(best_model_name)})")
+cli_h2("Top 20 -- US Open 2026 (Shinnecock Hills, {toupper(best_model_name)})")
 print(slice(ranked_table, 1:20), n = 20)
 
-cli_alert_info(
-  "Field note: 147-player PGA Championship proxy. ",
-  "Actual US Open field (156 players) available next week from DataGolf."
-)
+cli_alert_info("Field: {nrow(ranked_table)} actual U.S. Open participants.")
