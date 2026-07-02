@@ -207,6 +207,7 @@ field_form <- event_sg_all |>
     form_app_mean_8  = { x <- tail(event_app_mean[!is.na(event_app_mean)],  8); if (!length(x)) NA_real_ else mean(x) },
     form_arg_mean_8  = { x <- tail(event_arg_mean[!is.na(event_arg_mean)],  8); if (!length(x)) NA_real_ else mean(x) },
     form_putt_mean_8 = { x <- tail(event_putt_mean[!is.na(event_putt_mean)],8); if (!length(x)) NA_real_ else mean(x) },
+    form_putt_sd_8   = { x <- tail(event_putt_mean[!is.na(event_putt_mean)],8); if (length(x) < 2L) NA_real_ else sd(x) },
     .groups = "drop"
   )
 

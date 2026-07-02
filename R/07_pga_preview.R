@@ -303,6 +303,10 @@ pga_form <- event_sg_all |>
       x <- tail(event_putt_mean[!is.na(event_putt_mean)], 8)
       if (length(x) == 0) NA_real_ else mean(x)
     },
+    form_putt_sd_8 = {
+      x <- tail(event_putt_mean[!is.na(event_putt_mean)], 8)
+      if (length(x) < 2L) NA_real_ else sd(x)
+    },
     .groups = "drop"
   )
 

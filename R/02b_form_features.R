@@ -144,7 +144,7 @@ for (N in N_CANDIDATES[-1]) {
 
 cli_h2("Computing component form features (N=8)")
 
-comp_cache_file <- file.path(cache_dir, "form_component_features_N8.rds")
+comp_cache_file <- file.path(cache_dir, "form_component_features_N8_v2.rds")
 
 if (file.exists(comp_cache_file)) {
   cli_alert_info("Component form N=8: cache hit -- loading")
@@ -162,14 +162,18 @@ if (file.exists(comp_cache_file)) {
       form_arg_mean_8  = slide_dbl(event_arg_mean,  ~ mean(.x, na.rm = TRUE),
                                    .before = 8L, .after = -1L, .complete = FALSE),
       form_putt_mean_8 = slide_dbl(event_putt_mean, ~ mean(.x, na.rm = TRUE),
+                                   .before = 8L, .after = -1L, .complete = FALSE),
+      form_putt_sd_8   = slide_dbl(event_putt_mean, ~ sd(.x, na.rm = TRUE),
                                    .before = 8L, .after = -1L, .complete = FALSE)
     ) |>
     ungroup() |>
     mutate(across(starts_with("form_ott_mean_8") | starts_with("form_app_mean_8") |
-                  starts_with("form_arg_mean_8") | starts_with("form_putt_mean_8"),
+                  starts_with("form_arg_mean_8") | starts_with("form_putt_mean_8") |
+                  starts_with("form_putt_sd_8"),
                   ~ if_else(is.nan(.x), NA_real_, .x))) |>
     select(dg_id, event_id, year,
-           form_ott_mean_8, form_app_mean_8, form_arg_mean_8, form_putt_mean_8)
+           form_ott_mean_8, form_app_mean_8, form_arg_mean_8, form_putt_mean_8,
+           form_putt_sd_8)
 
   saveRDS(comp_form, comp_cache_file)
   cli_alert_success("Component form N=8: done, cached")

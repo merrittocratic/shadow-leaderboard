@@ -32,15 +32,19 @@ gbdt_recipe <- function(train_data) {
       sg_arg_r1 + sg_arg_r2 + sg_arg_r3 +
       sg_putt_r1 + sg_putt_r2 + sg_putt_r3 +
       form_residual_mean_4  + form_residual_mean_8  +
-      form_residual_mean_12 + form_residual_mean_16 +
+      form_residual_mean_12 +
       form_residual_slope_4  + form_residual_slope_8  +
       form_residual_slope_12 + form_residual_slope_16 +
-      form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 +
+      form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 + form_putt_sd_8 +
       wind_speed_tee + wind_dir_tee + temp_tee + precip_tee +
       weather_precision,
     data = train_data
   ) |>
     step_mutate(is_major = as.integer(is_major)) |>  # logical -> 0/1 for tree models
+    step_mutate(
+      slope_x_mean8        = form_residual_mean_8 * form_residual_slope_8,
+      form_slope8_nonmajor = form_residual_slope_8 * (1L - is_major)
+    ) |>
     step_impute_mean(all_numeric_predictors()) |>     # NAs in first-year priors / pre-coord events
     step_unknown(wave, weather_precision, new_level = "unknown") |>
     step_novel(course_id) |>
@@ -79,8 +83,9 @@ lmer_formula <- sg_residual ~ player_skill_prior + player_skill_prior_decay +
   sg_app_r1 + sg_app_r2 + sg_app_r3 +
   sg_arg_r1 + sg_arg_r2 + sg_arg_r3 +
   sg_putt_r1 + sg_putt_r2 + sg_putt_r3 +
-  form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 +
+  form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 + form_putt_sd_8 +
   form_residual_mean_4 + form_residual_mean_8 + form_residual_slope_8 +
+  form_residual_mean_8:form_residual_slope_8 +
   wind_speed_tee + wind_dir_tee + temp_tee + precip_tee + weather_precision +
   (1 + form_residual_mean_8 | player_id) + (1 | course_id)
 
@@ -123,7 +128,8 @@ brms_formula <- bf(
     sg_arg_r1 + sg_arg_r2 + sg_arg_r3 +
     sg_putt_r1 + sg_putt_r2 + sg_putt_r3 +
     form_residual_mean_4 + form_residual_mean_8 + form_residual_slope_8 +
-    form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 +
+    form_residual_mean_8:form_residual_slope_8 +
+    form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 + form_putt_sd_8 +
     wind_speed_tee + wind_dir_tee + temp_tee + precip_tee + weather_precision +
     (1 | player_id) + (1 | course_id)
 )
@@ -141,7 +147,8 @@ brms_formula_full <- bf(
     sg_arg_r1 + sg_arg_r2 + sg_arg_r3 +
     sg_putt_r1 + sg_putt_r2 + sg_putt_r3 +
     form_residual_mean_4 + form_residual_mean_8 + form_residual_slope_8 +
-    form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 +
+    form_residual_mean_8:form_residual_slope_8 +
+    form_ott_mean_8 + form_app_mean_8 + form_arg_mean_8 + form_putt_mean_8 + form_putt_sd_8 +
     wind_speed_tee + wind_dir_tee + temp_tee + precip_tee + weather_precision +
     (1 | player_id) +        # population-level player intercept
     (1 | player_season) +    # structural break: per-player-year deviation
@@ -184,7 +191,7 @@ prep_for_lme <- function(df, ref_df = NULL) {
                   "sg_arg_r1", "sg_arg_r2", "sg_arg_r3",
                   "sg_putt_r1", "sg_putt_r2", "sg_putt_r3",
                   "form_ott_mean_8", "form_app_mean_8",
-                  "form_arg_mean_8", "form_putt_mean_8",
+                  "form_arg_mean_8", "form_putt_mean_8", "form_putt_sd_8",
                   "wind_speed_tee", "wind_dir_tee", "temp_tee", "precip_tee")
 
   for (col in prior_cols) {
