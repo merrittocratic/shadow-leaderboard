@@ -179,17 +179,20 @@ load_vegas_baseline <- function(tournament, year) {
     return(empty)
   }
 
+  # Join names via the preview RDS (the canonical eval artifact, always named
+  # by slug) rather than the human-facing preview CSV, whose filename is not
+  # slug-derived in every preview script.
   preview_path <- file.path(
-    here(), "output",
-    sprintf("%s_preview_%d.csv", tournament, year)
+    here(), "output", "eval",
+    sprintf("predictions_%s_%d_preview.rds", tournament, year)
   )
   if (!file.exists(preview_path)) {
-    cli::cli_alert_warning("No preview CSV for name->dg_id join — vegas baseline will be NA")
+    cli::cli_alert_warning("No preview RDS for name->dg_id join — vegas baseline will be NA")
     return(empty)
   }
 
   odds    <- readRDS(odds_path)
-  preview <- readr::read_csv(preview_path, show_col_types = FALSE) |>
+  preview <- readRDS(preview_path) |>
     dplyr::select(dg_id, player_name) |>
     dplyr::mutate(player_name_norm = .normalize_player_name(player_name))
 
