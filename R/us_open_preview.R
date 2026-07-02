@@ -27,7 +27,9 @@ cli_h1("US Open 2026 -- pre-tournament ranked table (PGA Championship proxy fiel
 
 TOURNAMENT_START_DATE <- as.Date("2026-06-18")
 TOURNAMENT_YEAR       <- 2026L
-TOURNAMENT_SLUG       <- "us_open"
+# Must match the slug passed to eval_export.R (auto-derived as "u_s_open" by
+# 07_pga_preview.R) -- eval_export finds the preview RDS and odds RDS by slug.
+TOURNAMENT_SLUG       <- "u_s_open"
 TOURNAMENT_IS_MAJOR   <- TRUE
 TOURNAMENT_COURSE_NUM <- 618L
 COURSE_NAME           <- "Shinnecock Hills GC"
@@ -174,7 +176,12 @@ all_rounds <- bind_rows(
          sg_total, sg_ott, sg_app, sg_arg, sg_putt,
          player_skill_prior, sg_ott_prior, sg_app_prior,
          sg_arg_prior, sg_putt_prior, player_skill_prior_decay, n_prior_rounds)
-)
+) |>
+  # Point-in-time guard: the cached 2026 season data extends past the US Open
+  # when this preview is re-run retrospectively. Form features must only see
+  # events completed before the tournament started, or the re-scored preview
+  # leaks the tournament itself (and later events) into its own predictions.
+  filter(event_completed < TOURNAMENT_START_DATE)
 
 event_sg_all <- all_rounds |>
   group_by(dg_id, event_id, year, event_completed) |>
@@ -295,20 +302,31 @@ if (file.exists(stack_model_file)) {
 
   N_DRAWS <- 2000L
 
-  # posterior_predict returns sg_residual samples (deviation above player's own
-  # baseline). player_skill_prior must be added back before ranking so that a
+  # Each posterior draw is one simulated tournament: the player's expected
+  # residual (posterior_epred: parameter + player-RE uncertainty) persists
+  # across all 4 rounds, while observation noise (sigma) is drawn fresh per
+  # round. player_skill_prior must be added back before ranking so that a
   # club pro +2 above their -4.8 baseline loses to a tour pro +1 above +1.2.
   skill_priors <- score_frame_brms$player_skill_prior
 
-  tournament_totals <- Reduce("+", lapply(seq_len(4L), function(r) {
-    draws <- posterior_predict(
-      brms_stack,
-      newdata          = score_frame_brms,
-      ndraws           = N_DRAWS,
-      allow_new_levels = TRUE
-    )
-    sweep(draws, 2, skill_priors, "+")
-  }))  # [N_DRAWS x n_players], units: sg_total above field average
+  n_sim    <- min(N_DRAWS, ndraws(brms_stack))
+  draw_ids <- round(seq(1L, ndraws(brms_stack), length.out = n_sim))
+  mu_draws <- posterior_epred(
+    brms_stack,
+    newdata          = score_frame_brms,
+    draw_ids         = draw_ids,
+    allow_new_levels = TRUE
+  )
+  sigma_draws <- as.matrix(brms_stack, variable = "sigma")[draw_ids, 1]
+
+  # round noise: 4 independent N(0, sigma) rounds sum to N(0, 2 * sigma);
+  # sd vector of length N_DRAWS recycles down each column (per-draw sigma)
+  round_noise <- matrix(
+    rnorm(n_sim * ncol(mu_draws), sd = 2 * sigma_draws),
+    nrow = n_sim
+  )
+  tournament_totals <- 4 * sweep(mu_draws, 2, skill_priors, "+") + round_noise
+  # [N_DRAWS x n_players], units: sg_total above field average
 
   ranks_mat  <- t(apply(tournament_totals, 1, function(row) rank(-row, ties.method = "random")))
   win_prob   <- colMeans(ranks_mat == 1L)
@@ -344,7 +362,10 @@ cli_alert_success("Saved to {out_csv}")
 
 eval_dir <- file.path(PATH_OUTPUT, "eval")
 if (!dir.exists(eval_dir)) dir.create(eval_dir, recursive = TRUE)
-saveRDS(ranked_table, file.path(eval_dir, "predictions_us_open_2026_preview.rds"))
+saveRDS(ranked_table, file.path(
+  eval_dir,
+  sprintf("predictions_%s_%d_preview.rds", TOURNAMENT_SLUG, TOURNAMENT_YEAR)
+))
 cli_alert_success("Eval snapshot saved")
 
 fetch_odds_snapshot(TOURNAMENT_SLUG, TOURNAMENT_YEAR)
