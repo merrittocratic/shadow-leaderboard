@@ -27,6 +27,16 @@ cli_h2("Aggregating to event level")
 
 player_rounds <- readRDS(file.path(PATH_DATA, "02_player_rounds.rds"))
 
+# Anchor consistency: event_residual must use the same anchor as sg_residual.
+# The anchor travels as the player_anchor column, stamped by 02. Old rds files
+# (pre-anchor-experiment) lack both — fall back to the static prior.
+anchor_used <- attr(player_rounds, "skill_anchor") %||% "static"
+if (!"player_anchor" %in% names(player_rounds)) {
+  cli_alert_warning("player_anchor column missing (pre-anchor rds) -- using player_skill_prior")
+  player_rounds$player_anchor <- player_rounds$player_skill_prior
+}
+cli_alert_info("Residual anchor from 02_player_rounds.rds: {anchor_used}")
+
 event_sg <- player_rounds |>
   group_by(dg_id, event_id, year, event_completed) |>
   summarise(
@@ -35,15 +45,15 @@ event_sg <- player_rounds |>
     event_app_mean     = mean(sg_app,   na.rm = TRUE),
     event_arg_mean     = mean(sg_arg,   na.rm = TRUE),
     event_putt_mean    = mean(sg_putt,  na.rm = TRUE),
-    # player_skill_prior is constant within player-year; take first non-NA
-    player_skill_prior = first(na.omit(player_skill_prior)),
+    # player_anchor is constant within player-year; take first non-NA
+    player_anchor      = first(na.omit(player_anchor)),
     n_rounds           = n(),
     .groups            = "drop"
   ) |>
   mutate(
     # The residual the form features are built on:
-    # how much did the player outperform their skill prior at this event?
-    event_residual = event_sg_mean - player_skill_prior
+    # how much did the player outperform their skill anchor at this event?
+    event_residual = event_sg_mean - player_anchor
   ) |>
   arrange(dg_id, event_completed)
 
@@ -79,8 +89,13 @@ if (!dir.exists(cache_dir)) dir.create(cache_dir, recursive = TRUE)
 form_list <- vector("list", length(N_CANDIDATES))
 names(form_list) <- as.character(N_CANDIDATES)
 
+# Residual-form caches are anchor-dependent; key them by anchor so switching
+# SKILL_ANCHOR can never silently reuse stale windows. Static keeps the legacy
+# filenames. The component cache (raw SG, not residualized) is anchor-free.
+anchor_suffix <- if (anchor_used == "static") "" else paste0("_", anchor_used)
+
 for (N in N_CANDIDATES) {
-  cache_file <- file.path(cache_dir, paste0("form_features_N", N, ".rds"))
+  cache_file <- file.path(cache_dir, paste0("form_features_N", N, anchor_suffix, ".rds"))
 
   if (file.exists(cache_file)) {
     cli_alert_info("N={N}: cache hit -- loading")

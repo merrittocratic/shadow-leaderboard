@@ -150,12 +150,21 @@ cli_h2("Building pre-tournament features (including 2026 YTD)")
 
 player_rounds_hist <- readRDS(file.path(PATH_DATA, "02_player_rounds.rds"))
 
+# Residual anchor travels as the player_anchor column (stamped by 02).
+# Pre-anchor rds files lack it — fall back to the static prior (old behavior).
+if (!"player_anchor" %in% names(player_rounds_hist)) {
+  cli_alert_warning("player_anchor column missing (pre-anchor rds) -- using player_skill_prior")
+  player_rounds_hist$player_anchor <- player_rounds_hist$player_skill_prior
+}
+cli_alert_info("Residual anchor: {attr(player_rounds_hist, 'skill_anchor') %||% 'static'}")
+
 skill_priors_latest <- player_rounds_hist |>
   group_by(dg_id) |>
   filter(year == max(year)) |>
   summarise(
     player_skill_prior       = first(na.omit(player_skill_prior)),
     player_skill_prior_decay = first(na.omit(player_skill_prior_decay)),
+    player_anchor            = first(na.omit(player_anchor)),
     n_prior_rounds           = first(na.omit(n_prior_rounds)),
     sg_ott_prior             = first(na.omit(sg_ott_prior)),
     sg_app_prior             = first(na.omit(sg_app_prior)),
@@ -202,10 +211,10 @@ rounds_ytd <- if (length(data_ytd) > 0) {
 # Stack historical + YTD for form computation
 all_rounds <- bind_rows(
   select(player_rounds_hist, dg_id, event_id, year, event_completed,
-         sg_total, sg_ott, sg_app, sg_arg, sg_putt, player_skill_prior),
+         sg_total, sg_ott, sg_app, sg_arg, sg_putt, player_anchor),
   if (nrow(rounds_ytd) > 0)
     select(rounds_ytd, dg_id, event_id, year, event_completed,
-           sg_total, sg_ott, sg_app, sg_arg, sg_putt, player_skill_prior)
+           sg_total, sg_ott, sg_app, sg_arg, sg_putt, player_anchor)
 )
 
 # Recompute form features through the most recent completed event
@@ -222,9 +231,9 @@ event_sg_all <- all_rounds |>
             event_app_mean  = mean(sg_app,   na.rm = TRUE),
             event_arg_mean  = mean(sg_arg,   na.rm = TRUE),
             event_putt_mean = mean(sg_putt,  na.rm = TRUE),
-            player_skill_prior = first(na.omit(player_skill_prior)),
+            player_anchor   = first(na.omit(player_anchor)),
             .groups = "drop") |>
-  mutate(event_residual = event_sg_mean - player_skill_prior) |>
+  mutate(event_residual = event_sg_mean - player_anchor) |>
   arrange(dg_id, event_completed)
 
 form_latest <- event_sg_all |>
@@ -454,7 +463,7 @@ score_frame <- field_players |>
   ) |>
   mutate(n_prior_rounds = replace_na(n_prior_rounds, as.integer(round(mean(n_prior_rounds, na.rm = TRUE))))) |>
   mutate(across(
-    c(player_skill_prior, player_skill_prior_decay,
+    c(player_skill_prior, player_skill_prior_decay, player_anchor,
       course_fit_score,
       sg_ott_prior, sg_app_prior,
       sg_arg_prior, sg_putt_prior,
@@ -485,7 +494,7 @@ score_frame$.pred <- predict(tuned_model, score_frame)$.pred
 # ---- Build ranked table ---------------------------------------------------
 
 ranked_table <- score_frame |>
-  mutate(predicted_sg_total = .pred + player_skill_prior) |>
+  mutate(predicted_sg_total = .pred + player_anchor) |>
   arrange(desc(predicted_sg_total)) |>
   mutate(rank = row_number()) |>
   select(
@@ -496,6 +505,7 @@ ranked_table <- score_frame |>
     predicted_sg_total,
     predicted_sg_residual = .pred,
     player_skill_prior,
+    player_anchor,
     any_of(c("sg_r1", "sg_r2", "sg_r3")),
     form_residual_mean_8,
     n_events_available
@@ -532,9 +542,9 @@ if (file.exists(stack_model_file)) {
   # Each posterior draw is one simulated finish: the player's expected residual
   # (posterior_epred: parameter + player-RE uncertainty) persists across all
   # remaining rounds, while observation noise (sigma) is drawn fresh per round.
-  # player_skill_prior must be added to each future round before anchoring to
-  # actual_total_sg (which is already absolute SG).
-  skill_priors <- score_frame_brms$player_skill_prior
+  # player_anchor (the residual anchor from 02) must be added to each future
+  # round before anchoring to actual_total_sg (which is already absolute SG).
+  skill_priors <- score_frame_brms$player_anchor
 
   future_sg <- if (remaining_rounds > 0L) {
     n_sim    <- min(N_DRAWS, ndraws(brms_stack))

@@ -3,7 +3,7 @@ source("R/00_config.R")
 # Flatten the cached per-year DataGolf JSON into a tidy player-round table,
 # compute features and the player-centered residual target.
 #
-# Target: sg_residual = sg_total - player_skill_prior
+# Target: sg_residual = sg_total - player_anchor (SKILL_ANCHOR selects the prior)
 # Week 4 addition: sg_r1/sg_r2/sg_r3 — in-tournament prior-round SG features
 #   for the live leaderboard engine (08_live_leaderboard.R).
 #
@@ -358,6 +358,19 @@ skill_priors <- total_priors |>
 player_rounds <- player_rounds |>
   left_join(skill_priors, by = c("dg_id", "year"))
 
+# Anchor for the residual target (SKILL_ANCHOR from 00_config.R).
+# Both priors are NA on the same rows (first player-year), so the coalesce
+# is a safety net, not a behavior change.
+player_rounds <- player_rounds |>
+  mutate(
+    player_anchor = if (SKILL_ANCHOR == "decay") {
+      coalesce(player_skill_prior_decay, player_skill_prior)
+    } else {
+      player_skill_prior
+    }
+  )
+cli_alert_info("Residual anchor: {SKILL_ANCHOR} (player_anchor column)")
+
 # ---- 5. Course-fit score ---------------------------------------------------
 # course_fit_score = weighted sum of SG component priors, where weights reflect
 # how discriminating each skill is at that venue (from 02c_course_weights.R).
@@ -388,11 +401,14 @@ cli_alert_info(
 )
 
 # ---- 6. Target: player-centered SG residual --------------------------------
-# sg_residual = sg_total - player_skill_prior
+# sg_residual = sg_total - player_anchor  (anchor chosen by SKILL_ANCHOR)
 # "How much did this player outperform their own expected level this round?"
 # The conditions component of the joint baseline is handled by model features.
-# First-year players (NA prior) fall back to field-mean residual — keeps them
+# First-year players (NA anchor) fall back to field-mean residual — keeps them
 # in training without distorting the target distribution.
+# NOTE: residual RMSE remains comparable across anchors — the anchor is added
+# back at prediction time, so residual error equals total-SG error either way
+# (modulo the first-year fallback rows).
 
 player_rounds <- player_rounds |>
   group_by(event_id, year, round_num) |>
@@ -400,8 +416,8 @@ player_rounds <- player_rounds |>
   ungroup() |>
   mutate(
     sg_residual = if_else(
-      !is.na(player_skill_prior),
-      sg_total - player_skill_prior,
+      !is.na(player_anchor),
+      sg_total - player_anchor,
       sg_total - field_mean_sg       # first-year fallback
     )
   )
@@ -443,6 +459,7 @@ print(slice(events_per_year, c(1:3, (nrow(events_per_year) - 2):nrow(events_per_
 # ---- 6. Save --------------------------------------------------------------
 
 out_file <- file.path(PATH_DATA, "02_player_rounds.rds")
+attr(player_rounds, "skill_anchor") <- SKILL_ANCHOR
 saveRDS(player_rounds, out_file)
 
 cli_alert_success("Saved {scales::comma(nrow(player_rounds))} rows to {out_file}")

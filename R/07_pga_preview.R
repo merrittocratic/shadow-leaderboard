@@ -74,6 +74,14 @@ cli_h2("Building scoring dataset")
 # Load historical player_rounds
 player_rounds_hist <- readRDS(file.path(PATH_DATA, "02_player_rounds.rds"))
 
+# Residual anchor travels as the player_anchor column (stamped by 02).
+# Pre-anchor rds files lack it — fall back to the static prior (old behavior).
+if (!"player_anchor" %in% names(player_rounds_hist)) {
+  cli_alert_warning("player_anchor column missing (pre-anchor rds) -- using player_skill_prior")
+  player_rounds_hist$player_anchor <- player_rounds_hist$player_skill_prior
+}
+cli_alert_info("Residual anchor: {attr(player_rounds_hist, 'skill_anchor') %||% 'static'}")
+
 # Flatten 2026 YTD using the same logic as 02_feature_engineering.R
 flatten_event_simple <- function(event) {
   scores    <- event$scores
@@ -123,6 +131,7 @@ skill_priors_latest <- player_rounds_hist |>
   summarise(
     player_skill_prior       = first(na.omit(player_skill_prior)),
     player_skill_prior_decay = first(na.omit(player_skill_prior_decay)),
+    player_anchor            = first(na.omit(player_anchor)),
     n_prior_rounds           = first(na.omit(n_prior_rounds)),
     sg_ott_prior             = first(na.omit(sg_ott_prior)),
     sg_app_prior             = first(na.omit(sg_app_prior)),
@@ -213,11 +222,11 @@ rounds_2026 <- rounds_2026 |>
 all_rounds <- bind_rows(
   select(player_rounds_hist, dg_id, event_id, year, event_completed,
          sg_total, sg_ott, sg_app, sg_arg, sg_putt,
-         player_skill_prior, sg_ott_prior, sg_app_prior,
+         player_skill_prior, player_anchor, sg_ott_prior, sg_app_prior,
          sg_arg_prior, sg_putt_prior, player_skill_prior_decay, n_prior_rounds),
   select(rounds_2026, dg_id, event_id, year, event_completed,
          sg_total, sg_ott, sg_app, sg_arg, sg_putt,
-         player_skill_prior, sg_ott_prior, sg_app_prior,
+         player_skill_prior, player_anchor, sg_ott_prior, sg_app_prior,
          sg_arg_prior, sg_putt_prior, player_skill_prior_decay, n_prior_rounds)
 )
 
@@ -241,10 +250,10 @@ event_sg_all <- all_rounds |>
     event_app_mean     = mean(sg_app,   na.rm = TRUE),
     event_arg_mean     = mean(sg_arg,   na.rm = TRUE),
     event_putt_mean    = mean(sg_putt,  na.rm = TRUE),
-    player_skill_prior = first(na.omit(player_skill_prior)),
+    player_anchor      = first(na.omit(player_anchor)),
     .groups            = "drop"
   ) |>
-  mutate(event_residual = event_sg_mean - player_skill_prior) |>
+  mutate(event_residual = event_sg_mean - player_anchor) |>
   arrange(dg_id, event_completed)
 
 # For each PGA field player, compute form features as of the most recent
@@ -345,7 +354,7 @@ score_frame <- field_players |>
     weather_precision = r1_weather$weather_precision
   ) |>
   mutate(across(
-    c(player_skill_prior, player_skill_prior_decay,
+    c(player_skill_prior, player_skill_prior_decay, player_anchor,
       course_fit_score,
       sg_ott_prior, sg_app_prior, sg_arg_prior, sg_putt_prior,
       starts_with("form_residual"),
@@ -364,7 +373,7 @@ score_frame$.pred <- predict(tuned_model, score_frame)$.pred
 # ---- Output ranked table --------------------------------------------------
 
 ranked_table <- score_frame |>
-  mutate(predicted_sg_total = .pred + player_skill_prior) |>
+  mutate(predicted_sg_total = .pred + player_anchor) |>
   arrange(desc(predicted_sg_total)) |>
   mutate(rank = row_number()) |>
   select(
@@ -374,6 +383,7 @@ ranked_table <- score_frame |>
     predicted_sg_total,
     predicted_sg_residual = .pred,
     player_skill_prior,
+    player_anchor,
     form_residual_mean_8,
     form_residual_slope_8,
     n_events_available
@@ -402,10 +412,10 @@ if (file.exists(stack_model_file)) {
   # across all 4 rounds, while observation noise (sigma) is drawn fresh per
   # round. Summing independent posterior_predict calls per round would let
   # skill uncertainty average out across rounds, sharpening totals around
-  # the point estimate. player_skill_prior must be added back before ranking
-  # so that a club pro +2 above their -4.8 baseline loses to a tour pro +1
-  # above +1.2.
-  skill_priors <- score_frame_brms$player_skill_prior
+  # the point estimate. player_anchor (the residual anchor from 02) must be
+  # added back before ranking so that a club pro +2 above their -4.8 baseline
+  # loses to a tour pro +1 above +1.2.
+  skill_priors <- score_frame_brms$player_anchor
 
   n_sim    <- min(N_DRAWS, ndraws(brms_stack))
   draw_ids <- round(seq(1L, ndraws(brms_stack), length.out = n_sim))

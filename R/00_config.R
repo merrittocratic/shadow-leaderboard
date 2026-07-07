@@ -15,6 +15,15 @@ ODDS_API_KEY <- Sys.getenv("ODDS_API_KEY")
 TRAIN_YEAR_START <- 2010L
 TRAIN_YEAR_END   <- 2025L
 
+# Skill anchor for the residual target (decay-prior anchor experiment).
+# "static" = expanding-mean prior (production baseline)
+# "decay"  = decay-weighted prior (PRIOR_DECAY in 02, ~2.4-year half-life)
+# Only 02_feature_engineering.R reads this; the chosen anchor is baked into
+# data/02_player_rounds.rds as the player_anchor column and travels as data.
+# Switching anchors requires the full retrain chain: 02 -> 02b -> 05 -> 06b.
+SKILL_ANCHOR <- Sys.getenv("SKILL_ANCHOR", unset = "static")
+stopifnot(SKILL_ANCHOR %in% c("static", "decay"))
+
 # Tours in scope
 TOURS_IN_SCOPE <- c("pga")
 
