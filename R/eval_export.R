@@ -4,6 +4,17 @@
 # Run pattern:
 #   op run --env-file=.env.template -- Rscript R/eval_export.R memorial 2026
 #
+# Optional third arg: variant label for A/B experiments (e.g. "decay"). The
+# variant is embedded in the slug position of every model-side artifact name:
+#   reads  output/eval/predictions_<slug>_<variant>_<year>_preview.rds
+#   writes output/eval/predictions_<slug>_<variant>_<year>.parquet
+# Market-side snapshots (DG predictions, odds) stay keyed by the bare slug --
+# they are shared across variants. The Python harness needs no changes: pass
+# tournament="<slug>_<variant>" and its path templates resolve the variant
+# artifacts directly.
+#
+#   op run --env-file=.env.template -- Rscript R/eval_export.R genesis_open 2026 decay
+#
 # Requires:
 #   - output/eval/predictions_<tournament>_<year>_preview.rds  (from 07_pga_preview.R)
 #   - data/cache/historical_raw/pga_<year>.rds                 (from 01_pull_historical.R)
@@ -46,10 +57,10 @@ source(here("R", "datagolf_api.R"))
 
 # ---- loaders ----------------------------------------------------------------
 
-load_pretournament_predictions <- function(tournament, year) {
+load_pretournament_predictions <- function(artifact_slug, year) {
   snap_path <- file.path(
     here(), "output", "eval",
-    sprintf("predictions_%s_%d_preview.rds", tournament, year)
+    sprintf("predictions_%s_%d_preview.rds", artifact_slug, year)
   )
   if (!file.exists(snap_path)) {
     stop(
@@ -167,9 +178,10 @@ load_owgr_baseline <- function(tournament, year) {
   gsub("[^a-z ]", "", x) |> trimws() |> gsub("\\s+", " ", x = _)
 }
 
-load_vegas_baseline <- function(tournament, year) {
+load_vegas_baseline <- function(tournament, year, artifact_slug = tournament) {
   empty <- tibble(player_id = integer(0), pred_vegas_win_prob = double(0))
 
+  # Odds snapshots are market data, shared across variants — bare slug.
   odds_path <- file.path(
     here(), "output", "eval",
     sprintf("odds_%s_%d.rds", tournament, year)
@@ -184,7 +196,7 @@ load_vegas_baseline <- function(tournament, year) {
   # slug-derived in every preview script.
   preview_path <- file.path(
     here(), "output", "eval",
-    sprintf("predictions_%s_%d_preview.rds", tournament, year)
+    sprintf("predictions_%s_%d_preview.rds", artifact_slug, year)
   )
   if (!file.exists(preview_path)) {
     cli::cli_alert_warning("No preview RDS for name->dg_id join — vegas baseline will be NA")
@@ -309,11 +321,14 @@ enforce_contract <- function(df, tournament, year) {
 
 # ---- main -------------------------------------------------------------------
 
-build_eval_table <- function(tournament, year) {
-  cli::cli_h1("Building eval table: {tournament} {year}")
+build_eval_table <- function(tournament, year, variant = NULL) {
+  # Actuals, course metadata, and market baselines key off the bare slug;
+  # the variant only renames the model-side artifacts (preview in, parquet out).
+  artifact_slug <- if (is.null(variant)) tournament else paste(tournament, variant, sep = "_")
+  cli::cli_h1("Building eval table: {artifact_slug} {year}")
 
   cli::cli_alert_info("Loading pre-tournament predictions")
-  preds <- load_pretournament_predictions(tournament, year)
+  preds <- load_pretournament_predictions(artifact_slug, year)
 
   cli::cli_alert_info("Loading actuals")
   actuals <- load_actuals(tournament, year)
@@ -321,7 +336,7 @@ build_eval_table <- function(tournament, year) {
   cli::cli_alert_info("Loading baselines")
   dg    <- load_dg_baseline(tournament, year)
   owgr  <- load_owgr_baseline(tournament, year)
-  vegas <- load_vegas_baseline(tournament, year)
+  vegas <- load_vegas_baseline(tournament, year, artifact_slug)
 
   cli::cli_alert_info("Loading course metadata")
   course <- get_course_metadata(tournament, year)
@@ -355,7 +370,7 @@ build_eval_table <- function(tournament, year) {
 
   out_dir  <- here("output", "eval")
   if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
-  out_path <- file.path(out_dir, sprintf("predictions_%s_%d.parquet", tournament, year))
+  out_path <- file.path(out_dir, sprintf("predictions_%s_%d.parquet", artifact_slug, year))
   write_parquet(df, out_path)
   cli::cli_alert_success("Wrote {out_path}")
   invisible(df)
@@ -364,9 +379,13 @@ build_eval_table <- function(tournament, year) {
 # ---- CLI --------------------------------------------------------------------
 
 args <- commandArgs(trailingOnly = TRUE)
-if (length(args) == 2) {
-  build_eval_table(args[[1]], as.integer(args[[2]]))
+if (length(args) %in% c(2L, 3L)) {
+  build_eval_table(
+    args[[1]], as.integer(args[[2]]),
+    variant = if (length(args) == 3L) args[[3]] else NULL
+  )
 } else if (length(args) != 0) {
-  stop("Usage: Rscript R/eval_export.R <tournament_slug> <year>\n",
-       "Example: Rscript R/eval_export.R memorial 2026")
+  stop("Usage: Rscript R/eval_export.R <tournament_slug> <year> [variant]\n",
+       "Example: Rscript R/eval_export.R memorial 2026\n",
+       "         Rscript R/eval_export.R genesis_open 2026 decay")
 }
