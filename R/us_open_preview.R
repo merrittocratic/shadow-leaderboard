@@ -316,7 +316,11 @@ if (file.exists(stack_model_file)) {
       player_season = factor(paste(dg_id, year))
     )
 
-  N_DRAWS <- 2000L
+  # Seeded + tiled sims (2026-07-13): see 07_pga_preview.R — MC noise at 2000
+  # unseeded sims swung mid-tier bucket Spearman by 0.64 between identical runs.
+  set.seed(42)
+  N_DRAWS     <- 6000L   # capped at posterior size below
+  N_SIM_TILES <- 4L      # reuse each posterior draw with fresh round noise
 
   # Each posterior draw is one simulated tournament: the player's expected
   # residual (posterior_epred: parameter + player-RE uncertainty) persists
@@ -337,14 +341,16 @@ if (file.exists(stack_model_file)) {
   sigma_draws <- stack_sigma_draws(brms_stack, score_frame_brms, draw_ids)
 
   # round noise: 4 independent N(0, sigma) rounds sum to N(0, 2 * sigma);
-  # sigma_draws is [n_sim x n_players] (per-player when the stack models
+  # sigma matrices are [n_sim x n_players] (per-player when the stack models
   # sigma); as.vector() aligns column-major with the matrix() fill
+  mu_tiled    <- mu_draws[rep(seq_len(n_sim), N_SIM_TILES), , drop = FALSE]
+  sigma_tiled <- sigma_draws[rep(seq_len(n_sim), N_SIM_TILES), , drop = FALSE]
   round_noise <- matrix(
-    rnorm(n_sim * ncol(mu_draws), sd = 2 * as.vector(sigma_draws)),
-    nrow = n_sim
+    rnorm(length(mu_tiled), sd = 2 * as.vector(sigma_tiled)),
+    nrow = nrow(mu_tiled)
   )
-  tournament_totals <- 4 * sweep(mu_draws, 2, skill_priors, "+") + round_noise
-  # [N_DRAWS x n_players], units: sg_total above field average
+  tournament_totals <- 4 * sweep(mu_tiled, 2, skill_priors, "+") + round_noise
+  # [n_sim * N_SIM_TILES x n_players], units: sg_total above field average
 
   ranks_mat  <- t(apply(tournament_totals, 1, function(row) rank(-row, ties.method = "random")))
   win_prob   <- colMeans(ranks_mat == 1L)

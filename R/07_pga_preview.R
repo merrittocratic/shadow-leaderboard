@@ -148,6 +148,9 @@ taxonomy_full <- readr::read_csv(
 )
 
 TOURNAMENT_START_DATE <- as.Date(field_raw$date_start)
+# Post-start flag: once play begins, existing pre-tournament snapshots
+# (preview, DG baseline, odds) must not be overwritten by re-runs.
+tournament_underway   <- Sys.Date() > TOURNAMENT_START_DATE
 TOURNAMENT_YEAR       <- as.integer(format(TOURNAMENT_START_DATE, "%Y"))
 TOURNAMENT_SLUG       <- gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(field_raw$event_name)))
 TOURNAMENT_IS_MAJOR   <- field_raw$event_name %in% c(
@@ -188,14 +191,33 @@ dg_preds_raw <- tryCatch(
     NULL
   }
 )
+# Event-name guard (2026-07-13): early in tournament week DG's pre-tournament
+# endpoint can still serve LAST week's event (it served Genesis data on the
+# Monday of Open week). Saving that under this week's slug silently poisons
+# the eval baseline. Refuse to snapshot on slug mismatch.
 if (!is.null(dg_preds_raw)) {
+  dg_event <- dg_preds_raw$event_name %||% ""
+  dg_slug  <- gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(dg_event)))
   dg_snap_path <- file.path(
     PATH_OUTPUT, "eval",
     sprintf("dg_predictions_%s_%d.rds", TOURNAMENT_SLUG, TOURNAMENT_YEAR)
   )
-  if (!dir.exists(dirname(dg_snap_path))) dir.create(dirname(dg_snap_path), recursive = TRUE)
-  saveRDS(dg_preds_raw, dg_snap_path)
-  cli_alert_success("DG predictions snapshot saved to {dg_snap_path}")
+  if (!identical(dg_slug, TOURNAMENT_SLUG)) {
+    cli_alert_warning(
+      "DG predictions are for '{dg_event}' (slug {dg_slug}) but this preview is ",
+      "'{TOURNAMENT_SLUG}' -- DG has not rolled over yet. Snapshot NOT saved; ",
+      "re-run closer to the tournament."
+    )
+  } else if (tournament_underway && file.exists(dg_snap_path)) {
+    cli_alert_warning(
+      "Tournament underway and DG snapshot exists -- NOT overwriting {basename(dg_snap_path)} ",
+      "(mid-event DG preds are not a pre-tournament baseline)"
+    )
+  } else {
+    if (!dir.exists(dirname(dg_snap_path))) dir.create(dirname(dg_snap_path), recursive = TRUE)
+    saveRDS(dg_preds_raw, dg_snap_path)
+    cli_alert_success("DG predictions snapshot saved to {dg_snap_path}")
+  }
 }
 
 cli_alert_info(glue::glue(
@@ -405,7 +427,13 @@ if (file.exists(stack_model_file)) {
       player_season = factor(paste(dg_id, year))
     )
 
-  N_DRAWS <- 2000L
+  # Seeded + tiled sims (2026-07-13): at 2000 unseeded sims, win-prob MC noise
+  # (~0.3pp at p=0.02) swung mid-tier bucket Spearman by 0.64 between two runs
+  # of the SAME model. Use every posterior draw and tile each with fresh round
+  # noise; seed for board reproducibility.
+  set.seed(42)
+  N_DRAWS     <- 6000L   # capped at posterior size below
+  N_SIM_TILES <- 4L      # reuse each posterior draw with fresh round noise
 
   # Each posterior draw is one simulated tournament: the player's expected
   # residual (posterior_epred: parameter + player-RE uncertainty) persists
@@ -428,14 +456,16 @@ if (file.exists(stack_model_file)) {
   sigma_draws <- stack_sigma_draws(brms_stack, score_frame_brms, draw_ids)
 
   # round noise: 4 independent N(0, sigma) rounds sum to N(0, 2 * sigma);
-  # sigma_draws is [n_sim x n_players] (per-player when the stack models
+  # sigma matrices are [n_sim x n_players] (per-player when the stack models
   # sigma); as.vector() aligns column-major with the matrix() fill
+  mu_tiled    <- mu_draws[rep(seq_len(n_sim), N_SIM_TILES), , drop = FALSE]
+  sigma_tiled <- sigma_draws[rep(seq_len(n_sim), N_SIM_TILES), , drop = FALSE]
   round_noise <- matrix(
-    rnorm(n_sim * ncol(mu_draws), sd = 2 * as.vector(sigma_draws)),
-    nrow = n_sim
+    rnorm(length(mu_tiled), sd = 2 * as.vector(sigma_tiled)),
+    nrow = nrow(mu_tiled)
   )
-  tournament_totals <- 4 * sweep(mu_draws, 2, skill_priors, "+") + round_noise
-  # [N_DRAWS x n_players], units: sg_total above field average
+  tournament_totals <- 4 * sweep(mu_tiled, 2, skill_priors, "+") + round_noise
+  # [n_sim * N_SIM_TILES x n_players], units: sg_total above field average
 
   ranks_mat  <- t(apply(tournament_totals, 1, function(row) rank(-row, ties.method = "random")))
   win_prob   <- colMeans(ranks_mat == 1L)
@@ -459,7 +489,7 @@ if (file.exists(stack_model_file)) {
       by = "player_name"
     )
 
-  cli_alert_success("Win probabilities computed ({N_DRAWS} tournament simulations)")
+  cli_alert_success("Win probabilities computed ({n_sim * N_SIM_TILES} tournament simulations, seed 42)")
 } else {
   cli_alert_warning(
     "brms_stack.rds not found — skipping win probabilities. Run 06b_brms_stack.R to enable."
@@ -482,12 +512,30 @@ snapshot_file <- file.path(
   eval_dir,
   sprintf("predictions_%s_%d_preview.rds", TOURNAMENT_SLUG, TOURNAMENT_YEAR)
 )
-saveRDS(ranked_table, snapshot_file)
-cli_alert_success("Eval snapshot saved to {snapshot_file}")
+
+# Post-start guard (2026-07-13): once the tournament is underway, an existing
+# preview snapshot is the published pre-tournament board -- a scheduler re-run
+# mid-event must never clobber it (Earnest's Sunday Genesis re-run did exactly
+# that; the published board survived only in git history). Same-day (Thursday
+# morning) refreshes are still allowed.
+if (tournament_underway && file.exists(snapshot_file)) {
+  cli_alert_warning(
+    "Tournament started {TOURNAMENT_START_DATE} and a preview snapshot exists -- ",
+    "NOT overwriting {basename(snapshot_file)}"
+  )
+} else {
+  saveRDS(ranked_table, snapshot_file)
+  cli_alert_success("Eval snapshot saved to {snapshot_file}")
+}
 
 # ---- Odds snapshot (Pinnacle sharp line) ------------------------------------
-# Majors only — returns NULL silently for regular-tour events.
-fetch_odds_snapshot(TOURNAMENT_SLUG, TOURNAMENT_YEAR)
+# Majors only — returns NULL silently for regular-tour events. Same post-start
+# rule: mid-event odds are live prices, not a pre-tournament baseline.
+if (tournament_underway) {
+  cli_alert_warning("Tournament underway -- skipping odds snapshot (live prices are not a pre-tournament baseline)")
+} else {
+  fetch_odds_snapshot(TOURNAMENT_SLUG, TOURNAMENT_YEAR)
+}
 
 # Print top 20
 cli_h2("Top 20 — PGA Championship 2026 (model: {toupper(best_model_name)}, ranked by predicted SG total)")
