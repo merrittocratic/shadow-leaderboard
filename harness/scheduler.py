@@ -89,6 +89,25 @@ def _save_state(state: dict) -> None:
     STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
+def _reset_event_tracking(state: dict) -> None:
+    """Clear per-event / per-round state when latching onto a new tournament."""
+    for key in (
+        "completed_rounds",
+        "r07_fired",
+        "last_live_check",
+        "last_alert_ts",
+        "round_alert_counts",
+        "alerted_players_this_round",
+        "last_r08_fail_notified",
+        "muted_players",
+        "alert_registry",
+    ):
+        state[key] = DEFAULT_STATE.get(key)
+    state["field_fingerprint_history"] = []
+    state["_was_suspended"] = False
+    state["r08_paused"] = False
+
+
 def _log_event(event_type: str, **kwargs) -> None:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
     entry = {"ts": datetime.now(timezone.utc).isoformat(), "event": event_type, **kwargs}
@@ -728,6 +747,7 @@ def init(bot_module, dry_run: bool = False) -> None:
                                window_end=str(end_date))
                     detected = None
         if detected:
+            _reset_event_tracking(_state)
             _state.update(detected)
             _state["mode"] = "in_round"
             _save_state(_state)
@@ -778,6 +798,7 @@ def _tick_off_week(now: float) -> None:
         # still be considered "today"; timedelta.days would be -1 and skip it.
         days_until = (_parse_date(start).date() - datetime.now(timezone.utc).date()).days
         if 0 <= days_until <= 7:
+            _reset_event_tracking(_state)
             _state["mode"]       = "field_pending"
             _state["event_name"] = ev.get("event_name", "Unknown Event")
             _state["event_slug"] = _artifact_slug(_state["event_name"])
@@ -852,6 +873,7 @@ def _tick_pretournament(now: float) -> None:
                     start_date = _parse_date(det_start).date()
                     end_date   = _parse_date(det_end).date()
                     if start_date <= today_et <= end_date + timedelta(days=1):
+                        _reset_event_tracking(_state)
                         _state.update(detected)
                         _state["mode"] = "in_round"
                         _save_state(_state)
@@ -888,6 +910,7 @@ def _tick_in_round(now: float) -> None:
         ev = _resolve_schedule_event(event_name=live_event_name)
         if ev:
             start_dt = _parse_date(ev.get("date", ev.get("start_date", "")))
+            _reset_event_tracking(_state)
             _state.update({
                 "event_name": live_event_name,
                 "event_slug": _artifact_slug(live_event_name),
