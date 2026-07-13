@@ -148,9 +148,12 @@ taxonomy_full <- readr::read_csv(
 )
 
 TOURNAMENT_START_DATE <- as.Date(field_raw$date_start)
-# Post-start flag: once play begins, existing pre-tournament snapshots
-# (preview, DG baseline, odds) must not be overwritten by re-runs.
-tournament_underway   <- Sys.Date() > TOURNAMENT_START_DATE
+# Post-start flag: from start day onward, existing pre-tournament snapshots
+# (preview, DG baseline, odds) must not be overwritten by re-runs. >= not >
+# because UK events (Genesis Scottish, The Open) tee off ~1:30 AM ET -- any
+# start-day run in US hours is already mid-R1. First runs still save; a
+# deliberate refresh requires deleting the snapshot first.
+tournament_underway   <- Sys.Date() >= TOURNAMENT_START_DATE
 TOURNAMENT_YEAR       <- as.integer(format(TOURNAMENT_START_DATE, "%Y"))
 TOURNAMENT_SLUG       <- gsub("^_|_$", "", gsub("[^a-z0-9]+", "_", tolower(field_raw$event_name)))
 TOURNAMENT_IS_MAJOR   <- field_raw$event_name %in% c(
@@ -513,11 +516,10 @@ snapshot_file <- file.path(
   sprintf("predictions_%s_%d_preview.rds", TOURNAMENT_SLUG, TOURNAMENT_YEAR)
 )
 
-# Post-start guard (2026-07-13): once the tournament is underway, an existing
-# preview snapshot is the published pre-tournament board -- a scheduler re-run
+# Post-start guard (2026-07-13): from start day onward, an existing preview
+# snapshot is the published pre-tournament board -- a scheduler re-run
 # mid-event must never clobber it (Earnest's Sunday Genesis re-run did exactly
-# that; the published board survived only in git history). Same-day (Thursday
-# morning) refreshes are still allowed.
+# that; the published board survived only in git history).
 if (tournament_underway && file.exists(snapshot_file)) {
   cli_alert_warning(
     "Tournament started {TOURNAMENT_START_DATE} and a preview snapshot exists -- ",
@@ -530,9 +532,14 @@ if (tournament_underway && file.exists(snapshot_file)) {
 
 # ---- Odds snapshot (Pinnacle sharp line) ------------------------------------
 # Majors only — returns NULL silently for regular-tour events. Same post-start
-# rule: mid-event odds are live prices, not a pre-tournament baseline.
-if (tournament_underway) {
-  cli_alert_warning("Tournament underway -- skipping odds snapshot (live prices are not a pre-tournament baseline)")
+# rule: mid-event odds are live prices, not a pre-tournament baseline. An
+# existing snapshot is never overwritten from start day onward.
+odds_snap_file <- file.path(
+  PATH_OUTPUT, "eval",
+  sprintf("odds_%s_%d.rds", TOURNAMENT_SLUG, TOURNAMENT_YEAR)
+)
+if (tournament_underway && file.exists(odds_snap_file)) {
+  cli_alert_warning("Tournament underway -- keeping existing odds snapshot {basename(odds_snap_file)}")
 } else {
   fetch_odds_snapshot(TOURNAMENT_SLUG, TOURNAMENT_YEAR)
 }
