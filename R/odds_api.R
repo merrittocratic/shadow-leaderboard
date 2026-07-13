@@ -23,11 +23,15 @@ if (nchar(ODDS_API_KEY) == 0) {
 # Keys must match TOURNAMENT_SLUG as auto-derived by 07_pga_preview.R
 # (lowercase, non-alphanumeric -> "_"): "U.S. Open" -> "u_s_open",
 # "Masters Tournament" -> "masters_tournament".
+# Sport keys verified against The Odds API /v4/sports docs 2026-07-13: outright
+# markets all carry the _winner suffix (the old suffix-less Open/PGA keys made
+# fetch_odds_snapshot silently skip). PGA key is pattern-inferred, not in the
+# docs sample -- verify live before the 2027 PGA Championship.
 .ODDS_SPORT_KEYS <- c(
   "masters_tournament"    = "golf_masters_tournament_winner",
-  "pga_championship"      = "golf_pga_championship",
+  "pga_championship"      = "golf_pga_championship_winner",
   "u_s_open"              = "golf_us_open_winner",
-  "the_open_championship" = "golf_the_open_championship"
+  "the_open_championship" = "golf_the_open_championship_winner"
 )
 
 .odds_get <- function(path, params = list()) {

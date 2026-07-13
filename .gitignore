@@ -13,6 +13,7 @@ data/cache/
 
 # Model outputs (large binary files)
 output/models/*.rds
+output/models_decay_*/
 
 # Generated CSVs (content outputs — regenerate from scripts)
 output/*.csv
