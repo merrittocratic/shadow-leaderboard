@@ -166,16 +166,54 @@ cli_alert_info(
 # free) the effect is null (-0.004, t = -0.4): the apparent under-prediction
 # of hot players is absorbed by the gbdt_pred slope itself.
 
-brms_formula_stack <- bf(
-  sg_residual ~ gbdt_pred + (1 | player_id)
-)
+# STACK_TAIL=on enables the favorites-fix experiment (2026-07-13 diagnosis):
+#   (a) hinge term on gbdt_pred above its q90 — OOF slope of actual~pred is
+#       1.06 overall but 1.10 in the top decile and 1.30 in the top 2%
+#       (monotone gap growth, +0.11 to +0.17 SG/round at the top). One global
+#       slope cannot fit that tail; the hinge lets the stack learn it. The
+#       knot is baked into the formula as a literal so posterior_epred()
+#       evaluates it on newdata with no extra serving-side plumbing.
+#       Unlike the reverted form fixed effect, gbdt_pred is already a fixed
+#       effect — reshaping it does not create a within/between confound.
+#   (b) distributional sigma ~ gbdt_pred — elite players are steadier
+#       (round SD 2.52-2.60 vs field 2.76, cor(mean SG, SD) = -0.358); a
+#       single sigma flattens top-of-board win probabilities in the sim.
+#       Serving scripts handle both stack types via stack_sigma_draws().
+STACK_TAIL <- Sys.getenv("STACK_TAIL", unset = "off")
 
-brms_priors_stack <- c(
-  prior(normal(1.0, 0.2), class = b,          coef = gbdt_pred),
-  prior(normal(0, 0.5),   class = Intercept),
-  prior(normal(0, 0.5),   class = sd,         group = player_id),
-  prior(exponential(1),   class = sigma)
-)
+if (STACK_TAIL == "on") {
+  hinge_knot <- round(unname(quantile(stack_train$gbdt_pred, 0.90)), 4)
+  cli_alert_info("STACK_TAIL=on: hinge knot at gbdt_pred q90 = {hinge_knot}, sigma ~ gbdt_pred")
+
+  brms_formula_stack <- bf(
+    as.formula(sprintf(
+      "sg_residual ~ gbdt_pred + pmax(gbdt_pred - %.4f, 0) + (1 | player_id)",
+      hinge_knot
+    )),
+    sigma ~ gbdt_pred
+  )
+
+  brms_priors_stack <- c(
+    prior(normal(1.0, 0.2), class = b,         coef = gbdt_pred),
+    prior(normal(0, 0.5),   class = b),        # hinge term (mangled coef name)
+    prior(normal(0, 0.5),   class = Intercept),
+    prior(normal(0, 0.5),   class = sd,        group = player_id),
+    # sigma is modeled on the log scale: intercept near log(2.8) ~ 1.03
+    prior(normal(1, 0.5),   class = Intercept, dpar = sigma),
+    prior(normal(0, 0.3),   class = b,         dpar = sigma)
+  )
+} else {
+  brms_formula_stack <- bf(
+    sg_residual ~ gbdt_pred + (1 | player_id)
+  )
+
+  brms_priors_stack <- c(
+    prior(normal(1.0, 0.2), class = b,          coef = gbdt_pred),
+    prior(normal(0, 0.5),   class = Intercept),
+    prior(normal(0, 0.5),   class = sd,         group = player_id),
+    prior(exponential(1),   class = sigma)
+  )
+}
 
 # ---- Fit ---------------------------------------------------------------------
 
@@ -215,6 +253,7 @@ cli_alert_success(
 # ---- Save --------------------------------------------------------------------
 
 stack_model_file <- file.path(PATH_OUTPUT, "models", "brms_stack.rds")
+attr(brms_stack_fit, "stack_variant") <- STACK_TAIL
 saveRDS(brms_stack_fit, stack_model_file)
 cli_alert_success("Saved stacked brms model to {stack_model_file}")
 

@@ -425,12 +425,13 @@ if (file.exists(stack_model_file)) {
     draw_ids         = draw_ids,
     allow_new_levels = TRUE
   )
-  sigma_draws <- as.matrix(brms_stack, variable = "sigma")[draw_ids, 1]
+  sigma_draws <- stack_sigma_draws(brms_stack, score_frame_brms, draw_ids)
 
   # round noise: 4 independent N(0, sigma) rounds sum to N(0, 2 * sigma);
-  # sd vector of length N_DRAWS recycles down each column (per-draw sigma)
+  # sigma_draws is [n_sim x n_players] (per-player when the stack models
+  # sigma); as.vector() aligns column-major with the matrix() fill
   round_noise <- matrix(
-    rnorm(n_sim * ncol(mu_draws), sd = 2 * sigma_draws),
+    rnorm(n_sim * ncol(mu_draws), sd = 2 * as.vector(sigma_draws)),
     nrow = n_sim
   )
   tournament_totals <- 4 * sweep(mu_draws, 2, skill_priors, "+") + round_noise

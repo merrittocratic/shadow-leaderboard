@@ -172,6 +172,22 @@ brms_ctrl <- list(
   control = list(adapt_delta = 0.9)
 )
 
+# ---- Helper: per-draw sigma for tournament simulations ---------------------
+# Returns an [n_draws x n_players] matrix of observation-noise SDs.
+# Scalar-sigma stacks broadcast one sigma per draw across all players;
+# distributional stacks (sigma ~ ..., STACK_TAIL experiment) get per-player
+# sigma via posterior_epred(dpar = "sigma"). Serving scripts consume the
+# matrix column-major via as.vector(), matching matrix() fill order.
+
+stack_sigma_draws <- function(stack, newdata, draw_ids) {
+  if ("sigma" %in% brms::variables(stack)) {
+    s <- as.matrix(stack, variable = "sigma")[draw_ids, 1]
+    return(matrix(s, nrow = length(draw_ids), ncol = nrow(newdata)))
+  }
+  brms::posterior_epred(stack, newdata = newdata, dpar = "sigma",
+                        draw_ids = draw_ids, allow_new_levels = TRUE)
+}
+
 # ---- Helper: prep data for lme4 / brms ------------------------------------
 # Imputes first-year skill prior NAs with training-set column means and
 # coerces wave to factor. Pass ref_df = train_data when prepping test data
