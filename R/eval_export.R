@@ -178,6 +178,13 @@ load_owgr_baseline <- function(tournament, year) {
   gsub("[^a-z ]", "", x) |> trimws() |> gsub("\\s+", " ", x = _)
 }
 
+# Books sometimes list a player under his given name while DG uses the tour
+# name; normalization cannot bridge those. Map book-side names to DG-side.
+# Found live: Betfair listed Tom Kim as "Joohyung Kim" at the 2026 Open.
+.ODDS_NAME_ALIASES <- c(
+  "joohyung kim" = "tom kim"
+)
+
 load_vegas_baseline <- function(tournament, year, artifact_slug = tournament) {
   empty <- tibble(player_id = integer(0), pred_vegas_win_prob = double(0))
 
@@ -203,7 +210,8 @@ load_vegas_baseline <- function(tournament, year, artifact_slug = tournament) {
     return(empty)
   }
 
-  odds    <- readRDS(odds_path)
+  odds <- readRDS(odds_path) |>
+    dplyr::mutate(player_name_norm = dplyr::recode(player_name_norm, !!!.ODDS_NAME_ALIASES))
   preview <- readRDS(preview_path) |>
     dplyr::select(dg_id, player_name) |>
     dplyr::mutate(player_name_norm = .normalize_player_name(player_name))

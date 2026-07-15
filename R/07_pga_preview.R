@@ -160,7 +160,26 @@ TOURNAMENT_IS_MAJOR   <- field_raw$event_name %in% c(
   "Masters Tournament", "U.S. Open", "The Open Championship", "PGA Championship"
 )
 
-course_row <- taxonomy_full |> filter(venue_name == field_raw$course_name)
+# Normalized venue match (same helper as 08): DG endpoint names drift between
+# "GC" / "Golf Club" forms -- an exact match missed Royal Birkdale at the 2026
+# Open, silently imputing course_fit AND weather (lat/lon live on this row).
+.norm_venue <- function(x) {
+  x |>
+    tolower() |>
+    stringr::str_replace_all("\\bgolf club\\b", "gc") |>
+    stringr::str_replace_all("\\bcountry club\\b", "cc") |>
+    stringr::str_replace_all("\\bgolf course\\b", "gc") |>
+    stringr::str_replace_all("[^a-z0-9]", "")
+}
+course_row <- taxonomy_full |>
+  filter(.norm_venue(venue_name) == .norm_venue(field_raw$course_name))
+if (nrow(course_row) > 1L) {
+  course_row <- course_row |>
+    mutate(.n_for_sort = dplyr::coalesce(n_rounds, 0L)) |>
+    arrange(desc(.n_for_sort)) |>
+    slice(1L) |>
+    select(-.n_for_sort)
+}
 if (nrow(course_row) == 0) {
   TOURNAMENT_COURSE_NUM <- NA_integer_
 } else {
