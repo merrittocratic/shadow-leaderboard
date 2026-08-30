@@ -3,11 +3,12 @@ import json
 import sys
 from datetime import date
 
-from openai import OpenAI
+from anthropic import Anthropic
 
 from tools import TOOL_DISPATCH, TOOL_SCHEMAS
 
-DEFAULT_MODEL = "gpt-5.4"
+DEFAULT_MODEL = "claude-sonnet-4-6"
+MAX_TOKENS = 4096
 MAX_TOOL_TURNS = 15
 
 SYSTEM_PROMPT = """\
@@ -42,21 +43,6 @@ You're done when you can answer the diagnostic question with specifics. You do n
 """
 
 
-def _openai_tools(schemas: list[dict]) -> list[dict]:
-    """Convert Anthropic-format tool schemas to OpenAI function-calling format."""
-    out = []
-    for s in schemas:
-        out.append({
-            "type": "function",
-            "function": {
-                "name": s["name"],
-                "description": s["description"],
-                "parameters": s.get("input_schema", {"type": "object", "properties": {}, "required": []}),
-            },
-        })
-    return out
-
-
 def _execute_tool(name: str, inputs: dict) -> str:
     try:
         result = TOOL_DISPATCH[name](**inputs)
@@ -66,48 +52,51 @@ def _execute_tool(name: str, inputs: dict) -> str:
 
 
 def run_eval(prompt: str, model: str = DEFAULT_MODEL, verbose: bool = True) -> str:
-    client = OpenAI()
-    tools = _openai_tools(TOOL_SCHEMAS)
+    client = Anthropic()
     today = date.today().isoformat()
+    system = f"Today's date: {today}\n\n{SYSTEM_PROMPT}"
     messages: list[dict] = [
-        {"role": "system", "content": f"Today's date: {today}\n\n{SYSTEM_PROMPT}"},
         {"role": "user", "content": prompt},
     ]
 
     for turn in range(MAX_TOOL_TURNS):
-        response = client.chat.completions.create(
+        response = client.messages.create(
             model=model,
-            max_completion_tokens=4096,
-            tools=tools,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            tools=TOOL_SCHEMAS,
             messages=messages,
         )
 
-        choice = response.choices[0]
         if verbose:
             usage = response.usage
             print(
-                f"[turn {turn + 1}] stop={choice.finish_reason} "
-                f"in={usage.prompt_tokens} out={usage.completion_tokens}",
+                f"[turn {turn + 1}] stop={response.stop_reason} "
+                f"in={usage.input_tokens} out={usage.output_tokens}",
                 file=sys.stderr,
             )
 
-        if choice.finish_reason != "tool_calls":
-            return (choice.message.content or "").strip()
+        if response.stop_reason != "tool_use":
+            text_blocks = [b.text for b in response.content if b.type == "text"]
+            return "".join(text_blocks).strip()
 
-        messages.append(choice.message)
+        messages.append({"role": "assistant", "content": response.content})
 
-        for tc in choice.message.tool_calls:
+        tool_results = []
+        for block in response.content:
+            if block.type != "tool_use":
+                continue
             if verbose:
-                print(f"  -> {tc.function.name}({tc.function.arguments})", file=sys.stderr)
-            inputs = json.loads(tc.function.arguments)
-            result = _execute_tool(tc.function.name, inputs)
+                print(f"  -> {block.name}({json.dumps(block.input)})", file=sys.stderr)
+            result = _execute_tool(block.name, block.input)
             if verbose:
                 print(f"     result: {result[:300]}", file=sys.stderr)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": tc.id,
+            tool_results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
                 "content": result,
             })
+        messages.append({"role": "user", "content": tool_results})
 
     raise RuntimeError(f"hit MAX_TOOL_TURNS={MAX_TOOL_TURNS} without final response")
 
