@@ -174,6 +174,19 @@ def _norm_event(s: str | None) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
 
 
+# Fields smaller than the standard ~120-156 player gate. TOUR Championship is
+# a fixed top-30 FedEx Cup field and would sit in field_pending forever
+# waiting for a count it will never reach.
+MIN_FIELD_SIZE_OVERRIDES = {
+    "tourchampionship": 30,
+}
+DEFAULT_MIN_FIELD_SIZE = 50
+
+
+def _min_field_size(event_name: str | None) -> int:
+    return MIN_FIELD_SIZE_OVERRIDES.get(_norm_event(event_name), DEFAULT_MIN_FIELD_SIZE)
+
+
 def _artifact_slug(event_name: str | None) -> str:
     """Slug used by R preview/eval artifacts, e.g. U.S. Open -> u_s_open."""
     return re.sub(r"[^a-z0-9]+", "_", str(event_name or "unknown").lower()).strip("_")
@@ -819,7 +832,8 @@ def _tick_field_pending(now: float) -> None:
         return  # poll every 6h
     _state["last_field_poll"] = now
     field = _get_dg_field(_state.get("event_slug", ""))
-    if len(field) >= 50:  # field is populated
+    min_field = _min_field_size(_state.get("event_name"))
+    if len(field) >= min_field:  # field is populated
         event_name = _state["event_name"]
         event_slug = _state["event_slug"]
         # Fire R/07 automatically — no inline-button confirm needed.
